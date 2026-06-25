@@ -24,16 +24,17 @@ def test_replies_dsr_status_ok():
     assert rb.pending == ["\x1b[0n"]
 
 
-def test_replies_osc11_background_query():
+def test_does_not_answer_osc11_background_query():
+    # OSC 11 不应答: 发送方不读取应答, 应答会泄漏为可见输入
     rb = ReplyBuffer(bg="#0c0c0c")
     rb.feed(b"\x1b]11;?\x1b\\")
-    assert rb.pending == ["\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\"]
+    assert rb.pending == []
 
 
-def test_replies_osc11_with_bel_terminator():
+def test_does_not_answer_osc11_bel_terminated():
     rb = ReplyBuffer(bg="#0c0c0c")
     rb.feed(b"\x1b]11;?\x07")
-    assert rb.pending == ["\x1b]11;rgb:0c0c/0c0c/0c0c\x1b\\"]
+    assert rb.pending == []
 
 
 def test_updates_cursor_position():
