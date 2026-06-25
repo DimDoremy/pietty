@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from textual.app import App, ComposeResult
-from textual.containers import Container
+from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Static
 
-from pietty.layout import PaneTree
+from pietty.layout import PaneTree, tree_desc
 from pietty.mode import ModeState
 from pietty.terminal import TerminalWidget
 
@@ -21,7 +21,7 @@ _INSERT_HINTS = [("escape", "Esc 回 normal")]
 
 
 class PaneArea(Container):
-    pass
+    """承载布局树的容器根。"""
 
 
 class StatusBar(Static):
@@ -32,8 +32,10 @@ class PiettyApp(App):
     CSS = """
     Screen { layout: vertical; }
     PaneArea { layers: base; }
-    TerminalWidget { layer: base; }
-    .hidden { display: none; }
+    TerminalWidget { layer: base; border: round $primary; }
+    TerminalWidget.focused-pane { border: round $accent; }
+    PaneArea Horizontal { height: 100%; }
+    PaneArea Vertical { width: 100%; }
     StatusBar {
         height: 1;
         dock: bottom;
@@ -42,7 +44,7 @@ class PiettyApp(App):
         padding: 0 1;
     }
     StatusBar.mode-insert {
-        background: $success 40%;
+        background: $success 50%;
         color: $text;
     }
     """
@@ -65,26 +67,76 @@ class PiettyApp(App):
         self._refresh_status()
 
     # ---- pane <-> widget ----
-    def _spawn_pane(self, pane_id: int) -> None:
-        area = self.query_one(PaneArea)
+    def _make_widget(self, pane_id: int) -> TerminalWidget:
+        """创建或复用一个 TerminalWidget（PTY 在创建时即启动，不随布局重建销毁）。"""
+        if pane_id in self._widgets:
+            return self._widgets[pane_id]
         w = TerminalWidget(id=f"pane-{pane_id}")
         self._widgets[pane_id] = w
-        area.mount(w)
-        try:
-            w.focus()
-        except Exception:
-            pass
+        return w
+
+    def _spawn_pane(self, pane_id: int) -> None:
+        """首次创建 pane 的 widget（启动 PTY）。"""
+        if pane_id in self._widgets:
+            return
+        self._make_widget(pane_id)
+
+    # ---- 布局重建 ----
+    async def _mount_desc(self, parent, desc: dict) -> None:
+        """递归按描述把布局挂到 parent 下（父必须已 mounted）。"""
+        if desc["type"] == "leaf":
+            w = self._widgets[desc["id"]]
+            # widget 可能仍在旧树上，先 detach
+            try:
+                if w.parent is not None:
+                    w.remove()
+            except Exception:
+                pass
+            await parent.mount(w)
+            return
+        # 创建容器并先挂到 parent
+        if desc["type"] == "h":
+            container = Horizontal()
+        else:
+            container = Vertical()
+        await parent.mount(container)
+        ratio = desc["ratio"]
+        c1d, c2d = desc["children"]
+        await self._mount_desc(container, c1d)
+        await self._mount_desc(container, c2d)
+        c1 = container.children[0]
+        c2 = container.children[1]
+        if desc["type"] == "h":
+            c1.styles.width = f"{int(ratio * 100)}fr"
+            c2.styles.width = f"{int((1 - ratio) * 100)}fr"
+        else:
+            c1.styles.height = f"{int(ratio * 100)}fr"
+            c2.styles.height = f"{int((1 - ratio) * 100)}fr"
+
+    async def _relayout_async(self) -> None:
+        """异步重建布局：卸载旧树 → 按 PaneTree 重建 → 聚焦。"""
+        area = self.query_one(PaneArea)
+        # 卸载现有子节点（widget 复用，不销毁 PTY）
+        for child in list(area.children):
+            child.remove()
+        await self._mount_desc(area, tree_desc(self.panes))
+        self._focus_current()
 
     def _relayout(self) -> None:
-        """简易：仅聚焦 pane 可见，其余隐藏（完整比例排版留后续）。"""
+        """同步入口：调度异步重建。"""
+        self.call_after_refresh(self._relayout_async)
+
+    def _focus_current(self) -> None:
         focused = self.panes.focused
-        if (w := self._widgets.get(focused)) is not None:
+        for pid, w in self._widgets.items():
+            w.remove_class("focused-pane")
+        w = self._widgets.get(focused)
+        if w is not None:
+            w.add_class("focused-pane")
             try:
                 w.focus()
             except Exception:
                 pass
-        for pid, w in self._widgets.items():
-            w.set_class(pid != focused, "hidden")
 
     # ---- status bar ----
     def _refresh_status(self) -> None:
@@ -115,7 +167,7 @@ class PiettyApp(App):
             event.prevent_default()
             event.stop()
             return
-        # insert 模式：交给 focused widget 透传 shell（widget 的 on_key 处理）
+        # insert 模式：交给 focused widget 透传 shell
 
     def _handle_normal_command(self, key: str) -> None:
         if key == "s":
@@ -128,19 +180,23 @@ class PiettyApp(App):
             self._relayout()
         elif key == "o":
             self.panes.next_pane()
-            self._relayout()
+            self._focus_current()
         elif key == "O":
             self.panes.prev_pane()
-            self._relayout()
+            self._focus_current()
         elif key == "c":
             closing = self.panes.focused
+            if len(self.panes.leaves()) <= 1:
+                return  # 至少保留一个 pane
             self.panes.close(closing)
             if (w := self._widgets.pop(closing, None)) is not None:
+                w.shutdown()
                 w.remove()
             self._relayout()
         elif key == "q":
+            for w in self._widgets.values():
+                w.shutdown()
             self.exit()
-        # 其余键在 normal 模式忽略
 
 
 def main() -> None:

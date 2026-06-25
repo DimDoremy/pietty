@@ -119,6 +119,7 @@ class TerminalWidget(Widget):
         self._pty = None
         self._fd: int | None = None
         self._closed = False
+        self._spawned = False  # 防止布局重建 re-mount 时重复 spawn PTY
         from pietty.ptyquery import ReplyBuffer
         self._reply = ReplyBuffer(bg="#0c0c0c")
 
@@ -126,6 +127,14 @@ class TerminalWidget(Widget):
     def on_mount(self) -> None:
         if ptyprocess is None:
             return
+        if self._spawned:
+            # 布局重建 re-mount：重新注册 reader，不重复 spawn
+            if self._fd is not None and not self._closed:
+                os.set_blocking(self._fd, False)
+                self._loop = asyncio.get_event_loop()
+                self._loop.add_reader(self._fd, self._on_readable)
+            return
+        self._spawned = True
         argv = _resolve_shell(self._shell)
         try:
             self._pty = ptyprocess.PtyProcess.spawn(
@@ -185,13 +194,18 @@ class TerminalWidget(Widget):
                 self._loop.remove_reader(self._fd)
             except Exception:
                 pass
-        self._closed = True
 
     def on_unmount(self) -> None:
+        # 布局重建会先 unmount 再 mount：只 detach reader，不销毁 PTY
         self._detach_reader()
+
+    def shutdown(self) -> None:
+        """真正关闭 PTY（仅退出/关闭面板时调用）。"""
+        self._detach_reader()
+        self._closed = True
         if self._pty is not None:
             try:
-                self._pty.close()
+                self._pty.close(force=True)
             except Exception:
                 pass
         self._pty = None

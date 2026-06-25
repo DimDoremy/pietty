@@ -112,3 +112,24 @@ class PaneTree:
         ls = self.leaves()
         idx = next(i for i, p in enumerate(ls) if p.id == self.focused)
         self.focused = ls[(idx - 1) % len(ls)].id
+
+
+def tree_desc(tree: "PaneTree") -> dict:
+    """把布局树转成与 UI 无关的中间描述，便于渲染/测试。
+
+    返回:
+      {"type": "leaf", "id": pane_id}
+      {"type": "h"|"v", "ratio": float, "children": [desc, ...]}
+    """
+    return _desc(tree.root)
+
+
+def _desc(node: Node) -> dict:
+    if isinstance(node, Pane):
+        return {"type": "leaf", "id": node.id}
+    kind = "h" if isinstance(node, Horizontal) else "v"
+    return {
+        "type": kind,
+        "ratio": node.ratio,
+        "children": [_desc(c) for c in node.children],
+    }
