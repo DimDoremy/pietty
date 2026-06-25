@@ -211,9 +211,13 @@ class TerminalWidget(Widget):
     def on_key(self, event) -> None:
         if self._pty is None or self._fd is None:
             return
-        # ctrl+x 及 C-x 前缀待续时交由 App 处理，不写入 PTY
-        if event.key == "ctrl+x" or self.app._cx_pending:
+        # escape 让 App 处理模式切换（先 return，不写 PTY）
+        if event.key == "escape":
             return
+        # 仅 insert 模式透传 shell；normal 模式由 App 拦截命令键
+        if getattr(self.app, "modes", None) is not None:
+            if self.app.modes.current != "insert":
+                return
         b = self.model.key_to_bytes(event.key,
                                    getattr(event, "character", None))
         if b is None:
