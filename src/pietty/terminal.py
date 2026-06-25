@@ -64,7 +64,7 @@ _KEYMAP: dict[str, bytes] = {
 }
 
 
-import asyncio
+import asyncio  # noqa: F401  (保留供未来 async 用)
 
 from rich.text import Text
 from textual.reactive import reactive
@@ -84,7 +84,7 @@ class TerminalWidget(Widget):
     TerminalWidget { background: #0c0c0c; color: #e0e0e0; }
     """
 
-    _tick = reactive(0, init=False)  # 触发重渲染的计数器（类级 reactive）
+    _tick = reactive(0, init=False)  # 保留: 未来需驱动的 reactive 计数器
 
     def __init__(self, shell: str = "$SHELL", cwd: str | None = None,
                  term: str = "xterm-256color", locale: str = "en_US.UTF-8",
@@ -96,7 +96,8 @@ class TerminalWidget(Widget):
         self._locale = locale
         self.model = TerminalModel()
         self._pty = None
-        self._task = None
+        self._fd: int | None = None
+        self._closed = False
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
@@ -114,30 +115,46 @@ class TerminalWidget(Widget):
                 env=_default_env(self._term, self._locale))
         self.model.resize(self.size.height, self.size.width)
         self._pty.setwinsize(self.size.height, self.size.width)
-        self._task = asyncio.create_task(self._read_loop())
+        # 非阻塞 fd + asyncio 原生 reader（避免阻塞线程池与退出挂起）
+        self._fd = self._pty.fd
+        os.set_blocking(self._fd, False)
+        self._loop = asyncio.get_event_loop()
+        self._loop.add_reader(self._fd, self._on_readable)
 
-    async def _read_loop(self) -> None:
-        loop = asyncio.get_event_loop()
-        assert self._pty is not None
-        while True:
+    def _on_readable(self) -> None:
+        if self._fd is None or self._closed:
+            return
+        try:
+            data = os.read(self._fd, 65536)
+        except BlockingIOError:
+            return
+        except OSError:
+            # PTY 子进程退出后 read 报 EIO
+            self._detach_reader()
+            return
+        if not data:
+            self._detach_reader()
+            return
+        self.model.feed_bytes(data)
+        self.refresh(layout=False)
+
+    def _detach_reader(self) -> None:
+        if self._fd is not None and getattr(self, "_loop", None) is not None:
             try:
-                data = await loop.run_in_executor(
-                    None, self._pty.read, 4096)
-            except (EOFError, OSError):
-                break
-            if not data:
-                break
-            self.model.feed_bytes(data)
-            self._tick += 1  # 触发重渲染
+                self._loop.remove_reader(self._fd)
+            except Exception:
+                pass
+        self._closed = True
 
     def on_unmount(self) -> None:
-        if self._task is not None:
-            self._task.cancel()
+        self._detach_reader()
         if self._pty is not None:
             try:
                 self._pty.close()
             except Exception:
                 pass
+        self._pty = None
+        self._fd = None
 
     def on_resize(self, event) -> None:
         r, c = self.size.height, self.size.width
@@ -147,18 +164,15 @@ class TerminalWidget(Widget):
         if self._pty is not None:
             self._pty.setwinsize(r, c)
 
-    def watch__tick(self, _value: int) -> None:
-        self.refresh()
-
     def render(self) -> Text:
         return screen_to_rich(self.model.screen)
 
     def on_key(self, event) -> None:
-        if self._pty is None:
+        if self._pty is None or self._fd is None:
             return
         b = self.model.key_to_bytes(event.key)
         try:
-            self._pty.write(b)
+            os.write(self._fd, b)
         except OSError:
             pass
         event.prevent_default()
