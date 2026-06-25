@@ -1,51 +1,45 @@
+"""pietty —— niri 式水平滚动终端复用器。"""
 from __future__ import annotations
 
 import asyncio
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, Horizontal, Vertical
-from textual.events import Resize
-from textual.geometry import Size
+from textual.containers import HorizontalScroll
 from textual.widgets import Static
 
-from pietty.gridlayout import grid_map, grid_size
-from pietty.layout import PaneTree, tree_desc
 from pietty.mode import ModeState
+from pietty.scroll import ScrollLayout
 from pietty.terminal import TerminalWidget
 
-# normal 模式命令键 -> 描述（用于状态栏提示）
+# 默认每个 pane 的固定宽度（列）
+DEFAULT_PANE_WIDTH = 80
+
 _NORMAL_HINTS = [
     ("i", "i 插入"),
-    ("s", "s 水平拆分"),
-    ("v", "v 竖直拆分"),
-    ("o", "o 切换面板"),
+    ("n", "n 新建面板"),
+    ("h", "h 左 / l 右"),
     ("c", "c 关闭面板"),
     ("q", "q 退出"),
 ]
 _INSERT_HINTS = [("escape", "Esc 回 normal")]
 
 
-class PaneArea(Container):
-    """平铺所有 TerminalWidget 的网格容器。"""
+class PaneScroll(HorizontalScroll):
+    """承载所有 TerminalWidget 的水平滚动容器。"""
 
 
 class StatusBar(Static):
-    """底部状态栏：模式指示 + 键提示。"""
+    """底部状态栏：模式 + 键提示 + pane 计数。"""
 
 
 class PiettyApp(App):
     CSS = """
     Screen { layout: vertical; }
-    PaneArea { height: 1fr; }
-    PaneArea Horizontal,
-    PaneArea Vertical,
-    PaneArea TerminalWidget { width: 1fr; height: 1fr; }
-    PaneArea Horizontal { layout: horizontal; }
-    PaneArea Vertical { layout: vertical; }
+    PaneScroll { height: 1fr; }
     TerminalWidget {
+        width: 80;
+        height: 100%;
         border: round $primary;
-        width: 1fr;
-        height: 1fr;
     }
     TerminalWidget.focused-pane { border: round $accent; }
     StatusBar {
@@ -61,112 +55,94 @@ class PiettyApp(App):
     }
     """
 
-    BINDINGS: list = []  # 全部在 on_key 手动路由
+    BINDINGS: list = []
 
-    def __init__(self) -> None:
+    def __init__(self, pane_width: int = DEFAULT_PANE_WIDTH) -> None:
         super().__init__()
-        self.panes: PaneTree = PaneTree()
-        self._widgets: dict[int, TerminalWidget] = {}
+        self.pane_width = pane_width
+        self._panes: list[TerminalWidget] = []
+        self._focused: int = 0
         self.modes = ModeState()
 
     def compose(self) -> ComposeResult:
-        yield PaneArea()
+        yield PaneScroll()
         yield StatusBar("")
 
     def on_mount(self) -> None:
-        self._spawn_pane(self.panes.focused)
-        self._relayout()
+        self._new_pane()
         self._refresh_status()
 
-    # ---- pane <-> widget ----
-    def _spawn_pane(self, pane_id: int) -> None:
-        """首次创建 pane 的 widget（启动 PTY）。"""
-        if pane_id in self._widgets:
-            return
+    # ---- pane 管理 ----
+    @property
+    def focused_widget(self) -> TerminalWidget | None:
+        if 0 <= self._focused < len(self._panes):
+            return self._panes[self._focused]
+        return None
+
+    def _new_pane(self) -> None:
+        """新建 pane 并追加到右侧。"""
+        pane_id = len(self._panes)
         w = TerminalWidget(id=f"pane-{pane_id}")
-        self._widgets[pane_id] = w
+        self._panes.append(w)
+        self._focused = pane_id
+        scroll = self.query_one(PaneScroll)
+        self.call_after_refresh(self._mount_and_focus, w, scroll)
 
-    # ---- 布局重建（嵌套 Horizontal/Vertical + _screen_resized 触发重算） ----
-    async def _mount_desc(self, parent, desc: dict) -> None:
-        """递归按描述把布局挂到 parent 下（父必须已 mounted）。"""
-        if desc["type"] == "leaf":
-            w = self._widgets[desc["id"]]
-            try:
-                if w.parent is not None:
-                    w.remove()
-            except Exception:
-                pass
-            self._reset_styles(w)
-            # TerminalWidget 内容会撜疮自身宽度, 必须强制参与 fr 分配
-            w.styles.width = "1fr"
-            w.styles.height = "1fr"
-            await parent.mount(w)
+    async def _mount_and_focus(self, w: TerminalWidget, scroll: PaneScroll) -> None:
+        await scroll.mount(w)
+        self._focus_and_scroll()
+        # 强制重算(延迟一帧, 避免连续 mount 时重入)
+        self.call_after_refresh(self._force_layout)
+
+    def _close_pane(self) -> None:
+        if len(self._panes) <= 1:
             return
-        container = Horizontal() if desc["type"] == "h" else Vertical()
-        await parent.mount(container)
-        ratio = desc["ratio"]
-        c1d, c2d = desc["children"]
-        await self._mount_desc(container, c1d)
-        await self._mount_desc(container, c2d)
-        r1 = max(1, int(ratio * 100))
-        r2 = max(1, int((1 - ratio) * 100))
-        c1, c2 = container.children[0], container.children[1]
-        self._reset_styles(c1)
-        self._reset_styles(c2)
-        if desc["type"] == "h":
-            c1.styles.width = f"{r1}fr"
-            c2.styles.width = f"{r2}fr"
-        else:
-            c1.styles.height = f"{r1}fr"
-            c2.styles.height = f"{r2}fr"
-
-    def _reset_styles(self, w) -> None:
+        idx = self._focused
+        w = self._panes.pop(idx)
+        w.shutdown()
         try:
-            w.styles.width = None
-            w.styles.height = None
+            w.remove()
         except Exception:
             pass
+        self._focused = min(self._focused, len(self._panes) - 1)
+        self._force_layout()
+        self._focus_and_scroll()
 
-    def _trigger_layout(self) -> None:
-        """Textual 动态 mount/remove 后不重算 fr 布局（_layout_required
-        靠 idle 循环异步处理，交互场景下不及时）。
-        同步置标志 + 调 _refresh_layout 立即强制重算。
-        """
+    def _move_focus(self, delta: int) -> None:
+        n = len(self._panes)
+        if n == 0:
+            return
+        self._focused = (self._focused + delta) % n
+        self._focus_and_scroll()
+
+    # ---- 布局/滚动 ----
+    def _force_layout(self) -> None:
+        """动态 mount/remove 后强制重算布局。"""
         try:
             self.screen._layout_required = True
             self.screen._refresh_layout()
         except Exception:
             pass
 
-    async def _relayout_async(self) -> None:
-        """异步重建布局：卸载旧树 → 按 PaneTree 重建 → 触发重算 → 聚焦。"""
-        area = self.query_one(PaneArea)
-        for child in list(area.children):
-            child.remove()
-        self._trigger_layout()
-        await asyncio.sleep(0)
-        await self._mount_desc(area, tree_desc(self.panes))
-        self._trigger_layout()
-        await asyncio.sleep(0)
-        self._trigger_layout()
-        self._focus_current()  # [DEBUG] restored
-
-    def _relayout(self) -> None:
-        asyncio.create_task(self._relayout_async())
-
-    def _focus_current(self) -> None:
-        focused = self.panes.focused
-        for pid, w in self._widgets.items():
+    def _focus_and_scroll(self) -> None:
+        scroll = self.query_one(PaneScroll)
+        # 聚焦样式
+        for w in self._panes:
             w.remove_class("focused-pane")
-        w = self._widgets.get(focused)
+        w = self.focused_widget
         if w is not None:
             w.add_class("focused-pane")
             try:
                 w.focus()
             except Exception:
                 pass
+            # 滚动让聚焦 pane 进视图(暂禁用: scroll_to_widget 在测试中卡死)
+            # try:
+            #     scroll.scroll_to_widget(w, animate=False)
+            # except Exception:
+            #     pass
 
-    # ---- status bar ----
+    # ---- 状态栏 ----
     def _refresh_status(self) -> None:
         bar = self.query_one(StatusBar)
         if self.modes.current == "insert":
@@ -174,11 +150,13 @@ class PiettyApp(App):
                        + "  ".join(t for _, t in _INSERT_HINTS))
             bar.set_class(True, "mode-insert")
         else:
-            bar.update("-- NORMAL --   "
+            count = len(self._panes)
+            pos = f"[{self._focused + 1}/{count}]" if count else "[-]"
+            bar.update(f"-- NORMAL -- {pos}   "
                        + "  ".join(t for _, t in _NORMAL_HINTS))
             bar.set_class(False, "mode-insert")
 
-    # ---- key routing ----
+    # ---- 按键路由 ----
     def on_key(self, event) -> None:
         key = event.key
 
@@ -195,30 +173,20 @@ class PiettyApp(App):
             return
 
     def _handle_normal_command(self, key: str) -> None:
-        if key == "s":
-            new = self.panes.split(self.panes.focused, "horizontal")
-            self._spawn_pane(new)
-            self._relayout()
-        elif key == "v":
-            new = self.panes.split(self.panes.focused, "vertical")
-            self._spawn_pane(new)
-            self._relayout()
-        elif key == "o":
-            self.panes.next_pane()
-            self._focus_current()
-        elif key == "O":
-            self.panes.prev_pane()
-            self._focus_current()
+        if key == "n":
+            self._new_pane()
+            self._refresh_status()
+        elif key == "h":
+            self._move_focus(-1)
+            self._refresh_status()
+        elif key == "l":
+            self._move_focus(1)
+            self._refresh_status()
         elif key == "c":
-            closing = self.panes.focused
-            if len(self.panes.leaves()) <= 1:
-                return
-            self.panes.close(closing)
-            if (w := self._widgets.get(closing)) is not None:
-                w.shutdown()
-            self._relayout()
+            self._close_pane()
+            self._refresh_status()
         elif key == "q":
-            for w in self._widgets.values():
+            for w in self._panes:
                 w.shutdown()
             self.exit()
 

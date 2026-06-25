@@ -123,7 +123,7 @@ class TerminalWidget(Widget):
         from pietty.ptyquery import ReplyBuffer
         self._reply = ReplyBuffer(bg="#0c0c0c")
         self._dirty = False  # 渲染节流: 标记需要重绘, 每帧只刷新一次
-        self._render_cache = None  # screen_to_rich 缓存(避免未变时重算)
+        self._term_cache = None  # screen_to_rich 缓存(避免未变时重算)
         self._refresh_scheduled = False  # 避免重复调度刷新
 
     # ---- lifecycle ----
@@ -191,7 +191,7 @@ class TerminalWidget(Widget):
                     break
         # 节流: 仅标记脏, 由 _tick_refresh 每帧合并刷新一次
         self._dirty = True
-        self._render_cache = None
+        self._term_cache = None
         if not getattr(self, "_refresh_scheduled", False):
             self._refresh_scheduled = True
             self.call_after_refresh(self._do_refresh)
@@ -234,9 +234,9 @@ class TerminalWidget(Widget):
             self._pty.setwinsize(r, c)
 
     def render(self) -> Text:
-        if self._render_cache is None:
-            self._render_cache = screen_to_rich(self.model.screen)
-        return self._render_cache
+        if self._term_cache is None:
+            self._term_cache = screen_to_rich(self.model.screen)
+        return self._term_cache
 
     def on_key(self, event) -> None:
         if self._pty is None or self._fd is None:
