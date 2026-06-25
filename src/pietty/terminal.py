@@ -84,6 +84,8 @@ class TerminalWidget(Widget):
     TerminalWidget { background: #0c0c0c; color: #e0e0e0; }
     """
 
+    _tick = reactive(0, init=False)  # 触发重渲染的计数器（类级 reactive）
+
     def __init__(self, shell: str = "$SHELL", cwd: str | None = None,
                  term: str = "xterm-256color", locale: str = "en_US.UTF-8",
                  id: str | None = None) -> None:
@@ -94,7 +96,6 @@ class TerminalWidget(Widget):
         self._locale = locale
         self.model = TerminalModel()
         self._pty = None
-        self._tick = reactive(0)
         self._task = None
 
     # ---- lifecycle ----
