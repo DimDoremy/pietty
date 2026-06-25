@@ -40,7 +40,7 @@ class PiettyApp(App):
         padding: 0 1;
     }
     StatusBar.cx-pending {
-        background: $accent 40;
+        background: $accent;
         color: $text;
     }
     """
