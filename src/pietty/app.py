@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from textual.app import App, ComposeResult
 from textual.containers import HorizontalScroll
@@ -63,6 +64,7 @@ class PiettyApp(App):
         self._panes: list[TerminalWidget] = []
         self._focused: int = 0
         self.modes = ModeState()
+        self._close_pending: int | None = None  # 关闭确认: 待关闭 pane 索引
 
     def compose(self) -> ComposeResult:
         yield PaneScroll()
@@ -99,60 +101,28 @@ class PiettyApp(App):
             return
         idx = self._focused
         w = self._panes[idx]
-        alive = w._pty is not None and w._pty.isalive()
-        if alive:
-            self._prompt_close(idx)
+        # 检查 shell 是否有运行中的子进程（而非 shell 本身存活）
+        has_running = (w._pty is not None and w._pty.pid is not None
+                       and self._has_children(w._pty.pid))
+        if has_running:
+            self._close_pending = idx
+            self._refresh_status(pending_close=True)
             return
         self._do_close(idx)
 
-    def _prompt_close(self, idx: int) -> None:
-        """进程存活时弹出确认对话框。"""
-        from textual.screen import ModalScreen, Screen
-        from textual.widgets import Label, Button
-
-        class CloseDialog(Screen):
-            CSS = """
-            Screen { background: $surface 80%; }
-            #dialog {
-                width: 40;
-                height: auto;
-                padding: 1;
-                border: round $accent;
-                background: $panel;
-                margin: 4 10;
-                align: center middle;
-            }
-            Label { text-align: center; margin-bottom: 1; }
-            #buttons { align: center middle; }
-            Button { margin: 0 1; }
-            """
-            def compose(self):
-                from textual.containers import Vertical, Horizontal
-                with Vertical(id="dialog"):
-                    yield Label("Pane has a running process.")
-                    yield Label("What do you want to do?")
-                    with Horizontal(id="buttons"):
-                        yield Button("保留后台", id="bg")
-                        yield Button("终止", id="kill")
-                        yield Button("取消", id="cancel")
-
-            def on_button_pressed(self, event):
-                self.dismiss(event.button.id)
-
-        def on_choice(choice):
-            if choice == "kill":
-                self._do_close(idx)
-            elif choice == "bg":
-                pass  # 保留后台
-            self._refresh_status()
-
-        self.push_screen(CloseDialog(), on_choice)
+    @staticmethod
+    def _has_children(pid: int) -> bool:
+        """检查 PID 是否有运行中的子进程（用于判断 shell 内是否有命令在跑）。"""
+        try:
+            children = Path(f"/proc/{pid}/children").read_text().strip()
+            return bool(children)
+        except Exception:
+            return False  # 无法检测时默认无子进程（直接关）
 
     def _do_close(self, idx: int) -> None:
         """实际关闭 pane（异步通过 call_after_refresh）。"""
         w = self._panes.pop(idx)
         self._focused = min(idx, len(self._panes) - 1)
-        # 延迟一帧执行移除（避免同步 remove + layout 卡死）
         self.call_after_refresh(self._exec_close, w)
 
     def _exec_close(self, w: TerminalWidget) -> None:
@@ -164,8 +134,13 @@ class PiettyApp(App):
         self.call_after_refresh(self._after_close)
 
     def _after_close(self) -> None:
+        self._close_pending = None
         self._force_layout()
         self._focus_and_scroll()
+        self._refresh_status()
+
+    def _cancel_pending(self) -> None:
+        self._close_pending = None
         self._refresh_status()
 
     def _move_focus(self, delta: int) -> None:
@@ -203,22 +178,39 @@ class PiettyApp(App):
             #     pass
 
     # ---- 状态栏 ----
-    def _refresh_status(self) -> None:
+    def _refresh_status(self, pending_close: bool = False) -> None:
         bar = self.query_one(StatusBar)
         if self.modes.current == "insert":
             bar.update("-- INSERT --   "
                        + "  ".join(t for _, t in _INSERT_HINTS))
             bar.set_class(True, "mode-insert")
-        else:
-            count = len(self._panes)
-            pos = f"[{self._focused + 1}/{count}]" if count else "[-]"
-            bar.update(f"-- NORMAL -- {pos}   "
-                       + "  ".join(t for _, t in _NORMAL_HINTS))
+            return
+        if pending_close:
             bar.set_class(False, "mode-insert")
+            bar.update("-- CLOSE? --   (k) 终止  (b) 保留后台  (escape) 取消")
+            return
+        count = len(self._panes)
+        pos = f"[{self._focused + 1}/{count}]" if count else "[-]"
+        bar.update(f"-- NORMAL -- {pos}   "
+                   + "  ".join(t for _, t in _NORMAL_HINTS))
+        bar.set_class(False, "mode-insert")
 
     # ---- 按键路由 ----
     def on_key(self, event) -> None:
         key = event.key
+
+        # 关闭确认待处理: 拦截 k/b/escape
+        if self._close_pending is not None:
+            if key == "k":
+                self._do_close(self._close_pending)
+            elif key == "b":
+                self._cancel_pending()
+            elif key == "escape":
+                self._cancel_pending()
+            # 其他键忽略
+            event.prevent_default()
+            event.stop()
+            return
 
         if self.modes.transition(key):
             self._refresh_status()

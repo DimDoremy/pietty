@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shlex
+import signal
 
 import pyte
 
@@ -214,13 +215,24 @@ class TerminalWidget(Widget):
         self._detach_reader()
 
     def shutdown(self) -> None:
-        """真正关闭 PTY（仅退出/关闭面板时调用）。"""
+        """真正关闭 PTY（仅退出/关闭面板时调用）。
+        用 os.close/os.kill 绕过 ptyprocess.close() 的 time.sleep 阻塞。
+        """
         self._detach_reader()
         self._closed = True
         if self._pty is not None:
+            pid = self._pty.pid
             try:
-                self._pty.close(force=True)
-            except Exception:
+                os.close(self._fd) if self._fd is not None else None
+            except OSError:
+                pass
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+            try:
+                os.waitpid(pid, os.WNOHANG)
+            except OSError:
                 pass
         self._pty = None
         self._fd = None
