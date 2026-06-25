@@ -23,7 +23,7 @@ class PiettyApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        self.tree = PaneTree()
+        self.panes: PaneTree = PaneTree()
         self._widgets: dict[int, TerminalWidget] = {}
         self._cx_pending = False  # 是否已按 C-x，等待下一键
 
@@ -31,7 +31,7 @@ class PiettyApp(App):
         yield PaneArea()
 
     def on_mount(self) -> None:
-        self._spawn_pane(self.tree.focused)
+        self._spawn_pane(self.panes.focused)
         self._relayout()
 
     # ---- pane <-> widget ----
@@ -43,7 +43,7 @@ class PiettyApp(App):
 
     def _relayout(self) -> None:
         """简易：仅聚焦 pane 可见，其余隐藏（完整比例排版留后续）。"""
-        focused = self.tree.focused
+        focused = self.panes.focused
         for pid, w in self._widgets.items():
             w.set_class(pid != focused, "hidden")
 
@@ -61,21 +61,21 @@ class PiettyApp(App):
         event.stop()
         k = event.key
         if k == "2":
-            new = self.tree.split(self.tree.focused, "vertical")
+            new = self.panes.split(self.panes.focused, "vertical")
             self._spawn_pane(new)
             self._relayout()
         elif k == "3":
-            new = self.tree.split(self.tree.focused, "horizontal")
+            new = self.panes.split(self.panes.focused, "horizontal")
             self._spawn_pane(new)
             self._relayout()
         elif k == "0":
-            closing = self.tree.focused
-            self.tree.close(closing)
+            closing = self.panes.focused
+            self.panes.close(closing)
             if (w := self._widgets.pop(closing, None)) is not None:
                 w.remove()
             self._relayout()
         elif k == "o":
-            self.tree.next_pane()
+            self.panes.next_pane()
             self._relayout()
         elif k == "ctrl+c":
             self.exit()
