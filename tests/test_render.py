@@ -11,7 +11,7 @@ def test_utf8_decoder_partial_then_rest():
     data = "你好".encode("utf-8")
     head, tail = data[:4], data[4:]
     assert d.feed(head) == "你"
-    assert d.feed(tail) == "你好"
+    assert d.feed(tail) == "好"
 
 
 def test_utf8_decoder_across_multiple_feeds():
