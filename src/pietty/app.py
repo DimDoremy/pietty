@@ -98,15 +98,75 @@ class PiettyApp(App):
         if len(self._panes) <= 1:
             return
         idx = self._focused
+        w = self._panes[idx]
+        alive = w._pty is not None and w._pty.isalive()
+        if alive:
+            self._prompt_close(idx)
+            return
+        self._do_close(idx)
+
+    def _prompt_close(self, idx: int) -> None:
+        """进程存活时弹出确认对话框。"""
+        from textual.screen import ModalScreen, Screen
+        from textual.widgets import Label, Button
+
+        class CloseDialog(Screen):
+            CSS = """
+            Screen { background: $surface 80%; }
+            #dialog {
+                width: 40;
+                height: auto;
+                padding: 1;
+                border: round $accent;
+                background: $panel;
+                margin: 4 10;
+                align: center middle;
+            }
+            Label { text-align: center; margin-bottom: 1; }
+            #buttons { align: center middle; }
+            Button { margin: 0 1; }
+            """
+            def compose(self):
+                from textual.containers import Vertical, Horizontal
+                with Vertical(id="dialog"):
+                    yield Label("Pane has a running process.")
+                    yield Label("What do you want to do?")
+                    with Horizontal(id="buttons"):
+                        yield Button("保留后台", id="bg")
+                        yield Button("终止", id="kill")
+                        yield Button("取消", id="cancel")
+
+            def on_button_pressed(self, event):
+                self.dismiss(event.button.id)
+
+        def on_choice(choice):
+            if choice == "kill":
+                self._do_close(idx)
+            elif choice == "bg":
+                pass  # 保留后台
+            self._refresh_status()
+
+        self.push_screen(CloseDialog(), on_choice)
+
+    def _do_close(self, idx: int) -> None:
+        """实际关闭 pane（异步通过 call_after_refresh）。"""
         w = self._panes.pop(idx)
+        self._focused = min(idx, len(self._panes) - 1)
+        # 延迟一帧执行移除（避免同步 remove + layout 卡死）
+        self.call_after_refresh(self._exec_close, w)
+
+    def _exec_close(self, w: TerminalWidget) -> None:
         w.shutdown()
         try:
             w.remove()
         except Exception:
             pass
-        self._focused = min(self._focused, len(self._panes) - 1)
+        self.call_after_refresh(self._after_close)
+
+    def _after_close(self) -> None:
         self._force_layout()
         self._focus_and_scroll()
+        self._refresh_status()
 
     def _move_focus(self, delta: int) -> None:
         n = len(self._panes)
@@ -186,9 +246,12 @@ class PiettyApp(App):
             self._close_pane()
             self._refresh_status()
         elif key == "q":
-            for w in self._panes:
-                w.shutdown()
-            self.exit()
+            self.call_after_refresh(self._do_quit)
+
+    def _do_quit(self) -> None:
+        for w in self._panes:
+            w.shutdown()
+        self.exit()
 
 
 def main() -> None:
