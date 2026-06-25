@@ -1,0 +1,56 @@
+pietty MVP 实现清单（多面板 PTY）
+硬约束: 裸登录 shell 下 ANSI 正确、UTF-8 不乱码（最高优先级）
+
+[T] Task 1 项目脚手架与依赖
+    [T] 改写 pyproject.toml（textual/pyte/ptyprocess/rich + entry point + dev 组）
+    [T] 建 src/pietty 包与 tests 包，删 main.py
+    [T] uv sync 验证导入
+    [T] commit: chore scaffold src layout
+
+[T] Task 2 UTF-8 增量解码器（硬约束核心）
+    [T] 写失败测试：完整/分片/逐字节解码
+    [T] 确认失败
+    [T] 实现 Utf8Decoder（codecs.getincrementaldecoder）
+    [T] 确认 3 passed
+    [T] commit: feat(render) incremental utf-8 decoder
+
+[T] Task 3 pyte 屏幕状态 -> Rich Text（含颜色）
+    [T] 写失败测试：纯文本/bold/truecolor/256color
+    [T] 确认失败
+    [T] 实现 char_to_style + screen_to_rich
+    [T] 确认全部 passed
+    [T] commit: feat(render) pyte -> rich with colors
+
+[T] Task 4 PaneTree 布局结构
+    [T] 写失败测试：初始/水平拆分/嵌套/关闭提升/next_pane 轮转
+    [T] 确认失败
+    [T] 实现 Pane/Horizontal/Vertical/PaneTree
+    [T] 确认 5 passed
+    [T] commit: feat(layout) PaneTree split/close/focus
+
+[T] Task 5 TerminalWidget（PTY+pyte+渲染+resize+输入）
+    [T] 写 TerminalModel 测试：feed_bytes/resize/ansi 颜色
+    [T] 确认失败
+    [T] 实现 TerminalModel（screen+decoder+key_to_bytes+KEYMAP）
+    [T] 确认 3 passed
+    [T] 实现 TerminalWidget（mount PTY、异步读循环、resize、on_key 透传）
+    [T] commit: feat(terminal) TerminalModel + TerminalWidget
+
+[T] Task 6 PiettyApp 组装 + C-x 系统级键绑定
+    [T] 写 App 壳（compose/mount/relayout/on_key 两段式 C-x）
+    [T] 手动验收：C-x 3 拆分 / C-x o 切换 / C-x 0 关闭 / 中文emoji/htop/vim
+    [T] commit: feat(app) PiettyApp with C-x split/close/focus
+
+[T] Task 7 裸 shell ANSI/UTF-8 验收（硬约束关卡）
+    [T] 无 DISPLAY 环境跑 256 色脚本 + 中文/emoji + htop 拆分 + vim
+    [T] 失败项回流修 render/terminal，不放过
+    [T] commit: docs MVP ANSI/UTF-8 acceptance verified
+
+--- 后续阶段（本次不做，仅占位提醒）---
+[P1] config.toml 加载 + theme 解析（合并默认，失败回退告警）
+[P1] tab 栏（复用 PaneTree，C-t 新建 / C-x b 切换）
+[P2] 文件树侧边栏 + cwd 跟随（/proc/<pid>/cwd）
+[P2] 快捷键提示 footer（C-x ? 切换）
+[P3] 后台 job 托管 Route C（注入 trap，自托管子进程到新 tab，退出按任意键关）
+[P3] 桌面感知 Route A（检测 DISPLAY，配色作用于 pietty theme）
+[P1] 真并列排版（按 PaneTree.ratio 用 Horizontal/Vertical 容器重建）
