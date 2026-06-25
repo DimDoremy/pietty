@@ -84,6 +84,8 @@ class TerminalWidget(Widget):
     TerminalWidget { background: #0c0c0c; color: #e0e0e0; }
     """
 
+    can_focus = True  # 可聚焦，否则按键不会分发给 widget
+
     _tick = reactive(0, init=False)  # 保留: 未来需驱动的 reactive 计数器
 
     def __init__(self, shell: str = "$SHELL", cwd: str | None = None,
@@ -190,9 +192,13 @@ class TerminalWidget(Widget):
     def on_key(self, event) -> None:
         if self._pty is None or self._fd is None:
             return
+        # ctrl+x 及 C-x 前缀待续时交由 App 处理，不写入 PTY
+        if event.key == "ctrl+x" or self.app._cx_pending:
+            return
         b = self.model.key_to_bytes(event.key)
         try:
             os.write(self._fd, b)
         except OSError:
             pass
         event.prevent_default()
+        event.stop()  # 阻止冒泡，避免与 C-x 前缀处理冲突

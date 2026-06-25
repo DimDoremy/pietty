@@ -68,10 +68,20 @@ class PiettyApp(App):
         w = TerminalWidget(id=f"pane-{pane_id}")
         self._widgets[pane_id] = w
         area.mount(w)
+        try:
+            w.focus()
+        except Exception:
+            pass
 
     def _relayout(self) -> None:
         """简易：仅聚焦 pane 可见，其余隐藏（完整比例排版留后续）。"""
         focused = self.panes.focused
+        # 聚焦对应 widget
+        if (w := self._widgets.get(focused)) is not None:
+            try:
+                w.focus()
+            except Exception:
+                pass
         for pid, w in self._widgets.items():
             w.set_class(pid != focused, "hidden")
 
