@@ -98,6 +98,8 @@ class TerminalWidget(Widget):
         self._pty = None
         self._fd: int | None = None
         self._closed = False
+        from pietty.ptyquery import ReplyBuffer
+        self._reply = ReplyBuffer(bg="#0c0c0c")
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
@@ -136,6 +138,24 @@ class TerminalWidget(Widget):
             self._detach_reader()
             return
         self.model.feed_bytes(data)
+        # 用 pyte screen 的真实光标位置更新应答器
+        try:
+            self._reply.update_cursor(
+                row=self.model.screen.cursor.y + 1,
+                col=self.model.screen.cursor.x + 1,
+            )
+        except Exception:
+            pass
+        # 扫描 shell 发出的终端查询并应答（否则 shell 卡死）
+        self._reply.feed(data)
+        if self._reply.pending:
+            replies = self._reply.pending
+            self._reply.pending = []
+            for r in replies:
+                try:
+                    os.write(self._fd, r.encode("utf-8"))
+                except OSError:
+                    break
         self.refresh(layout=False)
 
     def _detach_reader(self) -> None:
