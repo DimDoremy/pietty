@@ -42,11 +42,30 @@ class TerminalModel:
     def resize(self, rows: int, cols: int) -> None:
         self.screen.resize(lines=rows, columns=cols)
 
-    def key_to_bytes(self, key: str) -> bytes:
-        return _KEYMAP.get(key, key.encode("utf-8"))
+    def key_to_bytes(self, key: str, character: str | None) -> bytes | None:
+        """把 Textual 按键转为写入 PTY 的字节。
+
+        返回 None 表示该键不产生输入（忽略）。
+        优先用 character（真实字符，避免把 key 规范名如 'comma' 写进去）。
+        """
+        # 1) 可打印字符优先
+        if character:
+            return character.encode("utf-8")
+        # 2) 命名键查表（方向键/功能键）
+        if key in _KEYMAP:
+            return _KEYMAP[key]
+        # 3) ctrl+<单字符> 转为控制码 (Ctrl+A -> \x01 ... Ctrl+Z -> \x1a)
+        if key.startswith("ctrl+") and len(key) == 6:
+            ch = key[5]
+            if "a" <= ch <= "z":
+                return bytes([ord(ch) - ord("a") + 1])
+            if "@" <= ch <= "_":
+                return bytes([ord(ch.upper()) - ord("A") + 1])
+        # 4) 其余修饰组合（alt+/shift+ 功能键等）暂忽略
+        return None
 
 
-# 精简但覆盖常见键的 ANSI 序列
+# 精简但覆盖常见键的 ANSI 序列（仅为 character=None 的功能键）
 _KEYMAP: dict[str, bytes] = {
     "up": b"\x1b[A",
     "down": b"\x1b[B",
@@ -195,7 +214,10 @@ class TerminalWidget(Widget):
         # ctrl+x 及 C-x 前缀待续时交由 App 处理，不写入 PTY
         if event.key == "ctrl+x" or self.app._cx_pending:
             return
-        b = self.model.key_to_bytes(event.key)
+        b = self.model.key_to_bytes(event.key,
+                                   getattr(event, "character", None))
+        if b is None:
+            return
         try:
             os.write(self._fd, b)
         except OSError:
