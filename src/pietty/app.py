@@ -2,13 +2,28 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 from textual.containers import Container
+from textual.widgets import Static
 
 from pietty.layout import PaneTree
 from pietty.terminal import TerminalWidget
 
+# C-x 系统级快捷键速查（name -> 显示文本）
+_HINTS = [
+    ("3", "C-x 3 水平拆分"),
+    ("2", "C-x 2 竖直拆分"),
+    ("0", "C-x 0 关闭面板"),
+    ("o", "C-x o 切换面板"),
+    ("b", "C-x b 切换 tab"),
+    ("ctrl+c", "C-x C-c 退出"),
+]
+
 
 class PaneArea(Container):
     pass
+
+
+class StatusBar(Static):
+    """底部操作提示栏。"""
 
 
 class PiettyApp(App):
@@ -17,6 +32,17 @@ class PiettyApp(App):
     PaneArea { layers: base; }
     TerminalWidget { layer: base; }
     .hidden { display: none; }
+    StatusBar {
+        height: 1;
+        dock: bottom;
+        background: $boost;
+        color: $text;
+        padding: 0 1;
+    }
+    StatusBar.cx-pending {
+        background: $accent 40;
+        color: $text;
+    }
     """
 
     BINDINGS: list = []  # C-x 在 on_key 手动处理
@@ -29,10 +55,12 @@ class PiettyApp(App):
 
     def compose(self) -> ComposeResult:
         yield PaneArea()
+        yield StatusBar("")
 
     def on_mount(self) -> None:
         self._spawn_pane(self.panes.focused)
         self._relayout()
+        self._refresh_status()
 
     # ---- pane <-> widget ----
     def _spawn_pane(self, pane_id: int) -> None:
@@ -47,10 +75,28 @@ class PiettyApp(App):
         for pid, w in self._widgets.items():
             w.set_class(pid != focused, "hidden")
 
+    # ---- status bar ----
+    def _refresh_status(self, pending: bool = False) -> None:
+        bar = self.query_one(StatusBar)
+        if pending:
+            bar.update("C-x … (按 3/2/0/o/b 或 C-c，Esc 取消)")
+            bar.set_class(True, "cx-pending")
+        else:
+            bar.update("  ".join(t for _, t in _HINTS))
+            bar.set_class(False, "cx-pending")
+
     # ---- key handling ----
     def on_key(self, event) -> None:
+        # Esc 取消挂起的 C-x
+        if self._cx_pending and event.key == "escape":
+            self._cx_pending = False
+            self._refresh_status(False)
+            event.prevent_default()
+            event.stop()
+            return
         if event.key == "ctrl+x":
             self._cx_pending = True
+            self._refresh_status(True)
             event.prevent_default()
             event.stop()
             return
@@ -79,6 +125,7 @@ class PiettyApp(App):
             self._relayout()
         elif k == "ctrl+c":
             self.exit()
+        self._refresh_status(False)
 
 
 def main() -> None:

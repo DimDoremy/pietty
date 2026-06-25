@@ -19,9 +19,13 @@ run:
 run-shell SHELL="$SHELL":
     PIETTY_SHELL="{{SHELL}}" uv run python -c "from pietty.app import main; main()"
 
-# 在无桌面环境下冒烟测试（验证 ANSI/UTF-8）
+# 在无桌面环境下冲烟测试（验证 ANSI/UTF-8）
 smoke:
     uv run python scripts/smoke_bare.py
+
+# 分析启动各阶段耗时（结果写入 /tmp/pietty_profile.log）
+profile:
+    uv run python scripts/profile_app.py && cat /tmp/pietty_profile.log
 
 # ── 测试 ──────────────────────────────────────────────
 
