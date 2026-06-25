@@ -88,7 +88,7 @@ class PiettyApp(App):
         self._panes.append(w)
         self._focused = pane_id
         scroll = self.query_one(PaneScroll)
-        self.call_after_refresh(self._mount_and_focus, w, scroll)
+        asyncio.create_task(self._mount_and_focus(w, scroll))
 
     async def _mount_and_focus(self, w: TerminalWidget, scroll: PaneScroll) -> None:
         await scroll.mount(w)
@@ -120,20 +120,20 @@ class PiettyApp(App):
             return False  # 无法检测时默认无子进程（直接关）
 
     def _do_close(self, idx: int) -> None:
-        """实际关闭 pane（异步通过 call_after_refresh）。"""
+        """实际关闭 pane（异步 task，避免同步 remove + layout 卡死）。"""
         w = self._panes.pop(idx)
         self._focused = min(idx, len(self._panes) - 1)
-        self.call_after_refresh(self._exec_close, w)
+        asyncio.create_task(self._close_task(w))
 
-    def _exec_close(self, w: TerminalWidget) -> None:
+    async def _close_task(self, w: TerminalWidget) -> None:
+        """关闭 task：shutdown -> remove -> layout，每步让出控制权。"""
         w.shutdown()
+        await asyncio.sleep(0)
         try:
             w.remove()
         except Exception:
             pass
-        self.call_after_refresh(self._after_close)
-
-    def _after_close(self) -> None:
+        await asyncio.sleep(0)
         self._close_pending = None
         self._force_layout()
         self._focus_and_scroll()
@@ -238,11 +238,12 @@ class PiettyApp(App):
             self._close_pane()
             self._refresh_status()
         elif key == "q":
-            self.call_after_refresh(self._do_quit)
+            asyncio.create_task(self._do_quit())
 
-    def _do_quit(self) -> None:
+    async def _do_quit(self) -> None:
         for w in self._panes:
             w.shutdown()
+            await asyncio.sleep(0)
         self.exit()
 
 
