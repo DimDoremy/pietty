@@ -148,16 +148,16 @@ class PiettyApp(App):
     def _new_pane(self, new_row: bool = False) -> None:
         """新建 pane。
 
-        new_row=False: 在当前行当前列右侧插入。
-        new_row=True:  在当前行下方新建一行（新的"列"）。
+        new_row=False: 在当前 tab 右侧水平新建 shell。
+        new_row=True:  新建 tab（新行）。
         """
         self._pane_seq += 1
         w = TerminalWidget(id=f"pane-{self._pane_seq}")
         self._panes.append(w)
         idx = len(self._panes) - 1
+        created_row = False
 
         if new_row or not self._grid:
-            # 首次创建或新行
             if not self._grid:
                 self._grid.append([idx])
                 self._focused_row = 0
@@ -166,6 +166,7 @@ class PiettyApp(App):
                 self._grid.insert(self._focused_row + 1, [idx])
                 self._focused_row += 1
                 self._focused_col = 0
+            created_row = True
         else:
             # 当前行右插
             row = self._grid[self._focused_row]
@@ -173,14 +174,16 @@ class PiettyApp(App):
             self._focused_col += 1
 
         container = self.pane_container
-        asyncio.create_task(self._mount_and_focus(w, container))
+        asyncio.create_task(self._mount_and_focus(w, container, created_row))
 
     async def _mount_and_focus(self, w: TerminalWidget,
-                               container: PaneContainer | None = None) -> None:
+                               container: PaneContainer | None = None,
+                               new_tab: bool = False) -> None:
         if container is None:
             container = self.pane_container
         await container.mount(w)
-        self.sidebar.add_entry(str(self._pane_seq))
+        if new_tab:
+            self.sidebar.add_entry(str(self._focused_row + 1))
         self._sync_pane_visibility()
         self._apply_pane_size(w)
         self._focus_and_scroll()
@@ -210,11 +213,11 @@ class PiettyApp(App):
         """关闭网格中 (row, col) 位置的 pane。"""
         idx = self._grid[row][col]
         w = self._panes[idx]
-        self.sidebar.remove_entry_by_seq(w.id.replace("pane-", ""))
-        # 从网格和列表移除
+        # 从网格移除
         del self._grid[row][col]
         if not self._grid[row]:
             del self._grid[row]
+            self.sidebar.remove_entry_by_seq(str(row + 1))
         self._panes.pop(idx)
 
         # 调整焦点
@@ -312,23 +315,59 @@ class PiettyApp(App):
             self._focus_and_scroll()
             self._refresh_status()
 
-    def _move_pane(self, d_row: int, d_col: int) -> None:
-        """Alt+h/j/k/l: 移动当前 pane 到相邻行列（交换位置）。"""
+    def _move_pane(self, d_tab: int, d_col: int) -> None:
+        """Alt+快捷键移动当前 pane。
+
+        d_tab != 0 (Alt+j/k): 把 pane 移到相邻 tab（行），边界时新建 tab。
+        d_col != 0 (Alt+h/l): 在当前 tab 内左右交换 pane 顺序。
+        """
         if not self._grid:
             return
         r, c = self._focused_row, self._focused_col
-        tr, tc = r + d_row, c + d_col
-        if tr < 0 or tr >= len(self._grid) or tc < 0 or tc >= len(self._grid[tr]):
-            return  # 目标边界外
-        # 在 _panes 中交换索引
         cur_idx = self._grid[r][c]
-        tgt_idx = self._grid[tr][tc]
-        self._panes[cur_idx], self._panes[tgt_idx] = self._panes[tgt_idx], self._panes[cur_idx]
-        # 在网格中交换
-        self._grid[r][c], self._grid[tr][tc] = self._grid[tr][tc], self._grid[r][c]
-        self._focused_row, self._focused_col = tr, tc
+
+        if d_tab != 0:
+            # --- 移到相邻 tab ---
+            # 从当前行移除
+            del self._grid[r][c]
+            row_emptied = not self._grid[r]
+            if row_emptied:
+                del self._grid[r]
+                self.sidebar.remove_entry_by_seq(str(r + 1))
+
+            target = r + d_tab
+            if 0 <= target < len(self._grid) and not row_emptied:
+                # 加入已有 tab（放末尾）
+                self._grid[target].append(cur_idx)
+                self._focused_row = target
+                self._focused_col = len(self._grid[target]) - 1
+            elif 0 <= target <= len(self._grid):
+                # 新建 tab
+                insert_at = max(0, min(target, len(self._grid)))
+                self._grid.insert(insert_at, [cur_idx])
+                self._focused_row = insert_at
+                self._focused_col = 0
+                self.sidebar.add_entry(str(self._focused_row + 1))
+            else:
+                # 越界回退：放回原位
+                if row_emptied:
+                    self._grid.insert(r, [cur_idx])
+                    self.sidebar.add_entry(str(r + 1))
+                else:
+                    self._grid[r].insert(c, cur_idx)
+                return
+        elif d_col != 0:
+            # --- 同 tab 内左右交换 ---
+            row = self._grid[r]
+            tc = c + d_col
+            if tc < 0 or tc >= len(row):
+                return
+            row[c], row[tc] = row[tc], row[c]
+            self._focused_col = tc
+
         self._sync_pane_visibility()
         self._focus_and_scroll()
+        self._refresh_status()
 
     def _sync_pane_visibility(self) -> None:
         """显示当前 tab（行）的所有 pane，隐藏其他行。"""
@@ -403,9 +442,8 @@ class PiettyApp(App):
         w = self.focused_widget
         if w is not None:
             w.add_class("focused-pane")
-        # 高亮侧边栏对应条目
-        flat = sum(len(self._grid[r]) for r in range(self._focused_row)) + self._focused_col
-        self.sidebar.set_highlight(flat)
+        # 高亮侧边栏对应 tab（行索引）
+        self.sidebar.set_highlight(self._focused_row)
         self._sync_pane_visibility()
 
     # ---- 状态栏 ----
@@ -492,26 +530,26 @@ class PiettyApp(App):
         elif key == "alt+n":
             self._new_pane(new_row=True)
             self._refresh_status()
-        elif key in ("k",):
-            self._move_focus(-1, 0)
+        elif key == "k":
+            self._move_focus(-1, 0)   # 上一个 tab
             self._refresh_status()
-        elif key in ("j",):
-            self._move_focus(1, 0)
+        elif key == "j":
+            self._move_focus(1, 0)    # 下一个 tab
             self._refresh_status()
-        elif key in ("h",):
-            self._move_focus(0, -1)
+        elif key == "h":
+            self._move_focus(0, -1)   # 左一个 shell
             self._refresh_status()
-        elif key in ("l",):
-            self._move_focus(0, 1)
+        elif key == "l":
+            self._move_focus(0, 1)    # 右一个 shell
             self._refresh_status()
         elif key == "alt+k":
-            self._move_pane(-1, 0)
+            self._move_pane(-1, 0)    # 移到上一个 tab
         elif key == "alt+j":
-            self._move_pane(1, 0)
+            self._move_pane(1, 0)     # 移到下一个 tab
         elif key == "alt+h":
-            self._move_pane(0, -1)
+            self._move_pane(0, -1)    # 同 tab 左移
         elif key == "alt+l":
-            self._move_pane(0, 1)
+            self._move_pane(0, 1)     # 同 tab 右移
         elif key == "c":
             self._close_pane()
         elif key == "r":
