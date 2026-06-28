@@ -327,34 +327,36 @@ class PiettyApp(App):
         cur_idx = self._grid[r][c]
 
         if d_tab != 0:
-            # --- 移到相邻 tab ---
-            # 从当前行移除
-            del self._grid[r][c]
-            row_emptied = not self._grid[r]
-            if row_emptied:
-                del self._grid[r]
-                self.sidebar.remove_entry_by_seq(str(r + 1))
-
+            # --- 移到相邻 tab，边界时新建 ---
+            source_has_others = len(self._grid[r]) > 1
             target = r + d_tab
-            if 0 <= target < len(self._grid) and not row_emptied:
-                # 加入已有 tab（放末尾）
+
+            if 0 <= target < len(self._grid):
+                # 目标 tab 存在：从当前行移除，加入目标行末尾
+                del self._grid[r][c]
+                if not self._grid[r]:
+                    del self._grid[r]
+                    self.sidebar.remove_entry_by_seq(str(r + 1))
+                    if target > r:
+                        target -= 1
                 self._grid[target].append(cur_idx)
                 self._focused_row = target
                 self._focused_col = len(self._grid[target]) - 1
-            elif 0 <= target <= len(self._grid):
-                # 新建 tab
-                insert_at = max(0, min(target, len(self._grid)))
-                self._grid.insert(insert_at, [cur_idx])
-                self._focused_row = insert_at
-                self._focused_col = 0
-                self.sidebar.add_entry(str(self._focused_row + 1))
-            else:
-                # 越界回退：放回原位
-                if row_emptied:
-                    self._grid.insert(r, [cur_idx])
-                    self.sidebar.add_entry(str(r + 1))
+            elif source_has_others:
+                # 目标 tab 不存在，但原 tab 还有其他 shell → 新建 tab
+                del self._grid[r][c]
+                if d_tab > 0:
+                    # Alt+j（下）：尾插
+                    self._grid.append([cur_idx])
+                    self._focused_row = len(self._grid) - 1
                 else:
-                    self._grid[r].insert(c, cur_idx)
+                    # Alt+k（上）：头插
+                    self._grid.insert(0, [cur_idx])
+                    self._focused_row = 0
+                self._focused_col = 0
+                self._rebuild_sidebar()
+            else:
+                # 目标不存在且原 tab 仅此 shell → 无意义，不操作
                 return
         elif d_col != 0:
             # --- 同 tab 内左右交换 ---
@@ -368,6 +370,16 @@ class PiettyApp(App):
         self._sync_pane_visibility()
         self._focus_and_scroll()
         self._refresh_status()
+
+    def _rebuild_sidebar(self) -> None:
+        """根据当前网格重建侧边栏（用于 tab 插入/删除后重新编号）。"""
+        sb = self.sidebar
+        for child in list(sb.children):
+            child.remove()
+        sb._entries.clear()
+        for i in range(len(self._grid)):
+            sb.add_entry(str(i + 1))
+        sb.set_highlight(self._focused_row)
 
     def _sync_pane_visibility(self) -> None:
         """显示当前 tab（行）的所有 pane，隐藏其他行。"""
@@ -442,6 +454,11 @@ class PiettyApp(App):
         w = self.focused_widget
         if w is not None:
             w.add_class("focused-pane")
+            # 滚动让聚焦 shell 进视图
+            try:
+                self.pane_container.scroll_to_widget(w, animate=False)
+            except Exception:
+                pass
         # 高亮侧边栏对应 tab（行索引）
         self.sidebar.set_highlight(self._focused_row)
         self._sync_pane_visibility()
