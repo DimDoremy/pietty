@@ -416,7 +416,7 @@ class PiettyApp(App):
     def _on_overview_done(self, _result) -> None:
         """概览窗口关闭后恢复。"""
         self._overview = False
-        self.call_after_refresh(self._post_overview)
+        self._post_overview()
 
     def _post_overview(self) -> None:
         """概览退出后同步显示。"""
@@ -424,6 +424,8 @@ class PiettyApp(App):
         self._force_layout()
         self._focus_and_scroll()
         self._refresh_status()
+        # 再延迟一帧刷新一次，确保状态栏（INSERT/NORMAL）和滚动都到位
+        self.call_after_refresh(self._refresh_status)
 
     # ---- 布局/滚动 ----
     def _force_layout(self) -> None:
@@ -529,10 +531,10 @@ class PiettyApp(App):
         key = event.key
 
         # 终端可能把 Alt+key 拆成 ESC + key 两个事件。
-        # 如果一个普通按键紧跟在 escape 之后（<50ms），合成 alt+key。
+        # 如果一个普通按键紧跟在 escape 之后（<150ms），合成 alt+key。
         now = time.perf_counter()
         if (self._last_escape_time > 0
-                and now - self._last_escape_time < 0.1
+                and now - self._last_escape_time < 0.15
                 and key != "escape"):
             key = "alt+" + key
             self._last_escape_time = 0
@@ -540,6 +542,24 @@ class PiettyApp(App):
             self._last_escape_time = now
         else:
             self._last_escape_time = 0
+
+        # ; 前缀在任何模式下都可用（允许 insert 模式下 ;q 退出）
+        if self._prefix_pending:
+            self._prefix_pending = False
+            alt_key = "alt+" + key
+            _dbg("prefix→ %r", alt_key)
+            if self.modes.transition(alt_key):
+                self._refresh_status()
+            elif self.modes.current == "normal":
+                self._handle_normal_command(alt_key)
+            event.prevent_default()
+            event.stop()
+            return
+        if key in (";", "semicolon"):
+            self._prefix_pending = True
+            event.prevent_default()
+            event.stop()
+            return
 
         # 关闭确认待处理: 拦截 k/b/escape
         if self._close_pending is not None:
@@ -570,20 +590,6 @@ class PiettyApp(App):
             return
 
         if self.modes.current == "normal":
-            # ; 前缀：等下一个键做 alt 等价操作
-            if self._prefix_pending:
-                self._prefix_pending = False
-                alt_key = "alt+" + key
-                _dbg("prefix→ %r", alt_key)
-                self._handle_normal_command(alt_key)
-                event.prevent_default()
-                event.stop()
-                return
-            if key in (";", "semicolon"):
-                self._prefix_pending = True
-                event.prevent_default()
-                event.stop()
-                return
             self._handle_normal_command(key)
             event.prevent_default()
             event.stop()
