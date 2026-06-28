@@ -156,10 +156,15 @@ class PiettyApp(App):
         idx = len(self._panes) - 1
 
         if new_row or not self._grid:
-            # 新行
-            self._grid.insert(self._focused_row + 1, [idx])
-            self._focused_row += 1
-            self._focused_col = 0
+            # 首次创建或新行
+            if not self._grid:
+                self._grid.append([idx])
+                self._focused_row = 0
+                self._focused_col = 0
+            else:
+                self._grid.insert(self._focused_row + 1, [idx])
+                self._focused_row += 1
+                self._focused_col = 0
         else:
             # 当前行右插
             row = self._grid[self._focused_row]
