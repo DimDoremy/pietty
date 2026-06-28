@@ -416,11 +416,12 @@ class PiettyApp(App):
     def _on_overview_done(self, _result) -> None:
         """概览窗口关闭后恢复。"""
         self._overview = False
-        self._post_overview()
+        self.call_after_refresh(self._post_overview)
 
     def _post_overview(self) -> None:
         """概览退出后同步显示。"""
         self._sync_pane_visibility()
+        self._force_layout()
         self._focus_and_scroll()
         self._refresh_status()
 
@@ -522,6 +523,9 @@ class PiettyApp(App):
 
     # ---- 按键路由 ----
     def on_key(self, event) -> None:
+        # 概览模态窗口在前台时，主 app 不处理按键
+        if self._overview:
+            return
         key = event.key
 
         # 终端可能把 Alt+key 拆成 ESC + key 两个事件。

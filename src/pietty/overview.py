@@ -175,6 +175,7 @@ class OverviewScreen(Screen):
         self._highlight()
 
     def action_quit_overview(self) -> None:
+        self._app._overview = False
         self.app.pop_screen()
 
     def on_key(self, event) -> None:
@@ -239,8 +240,8 @@ class OverviewScreen(Screen):
         self._app._focused_row = r
         self._app._focused_col = c
         self._app.modes.current = mode
+        self._app._overview = False  # 先清除标志，避免 on_key guard 吞键
         self.app.pop_screen()
-        self._app.call_after_refresh(self._app._post_overview)
 
     def _move_selected(self) -> None:
         """把选中的 pane 移到当前主界面聚焦 pane 的下方（同一 tab 末尾）。"""
