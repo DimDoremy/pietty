@@ -92,6 +92,9 @@ from textual.widget import Widget
 
 from pietty.render import screen_to_rich
 
+# 在 _refresh_paused 期间返回的空白 Text 常量（保证同一对象，使合成器免于重复重绘）
+_PAUSED_TEXT = Text()
+
 try:
     import ptyprocess
 except ImportError:  # 测试环境可能无
@@ -126,6 +129,8 @@ class TerminalWidget(Widget):
         self._dirty = False  # 渲染节流: 标记需要重绘, 每帧只刷新一次
         self._term_cache = None  # screen_to_rich 缓存(避免未变时重算)
         self._refresh_scheduled = False  # 避免重复调度刷新
+        self._refresh_paused = False  # App 进入关闭确认态时暂停刷新（确保提示可见）
+        self.size_fraction: float = 0.5  # 占视口宽度比例（niri 风格：默认一半）
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
@@ -190,15 +195,32 @@ class TerminalWidget(Widget):
                     os.write(self._fd, r.encode("utf-8"))
                 except OSError:
                     break
-        # 节流: 仅标记脏, 由 _tick_refresh 每帧合并刷新一次
+        # 节流: 仅标记脏, 每 ~33ms (30fps) 合并刷新一次, 避免高频 PTY 数据
+        # 触发过多 refresh 把 Textual 合成器压垮（渲染风暴/卡死）。
         self._dirty = True
         self._term_cache = None
         if not getattr(self, "_refresh_scheduled", False):
             self._refresh_scheduled = True
-            self.call_after_refresh(self._do_refresh)
+            asyncio.get_event_loop().call_later(0.033, self._do_refresh_safe)
+
+    def _do_refresh_safe(self) -> None:
+        """节流刷新入口（由 call_later 调度）。"""
+        self._refresh_scheduled = False
+        if self._closed or not self.is_mounted:
+            return
+        if self._refresh_paused:
+            return
+        if self._dirty:
+            self._dirty = False
+            try:
+                self.refresh(layout=False)
+            except Exception:
+                pass
 
     def _do_refresh(self) -> None:
         self._refresh_scheduled = False
+        if self._closed:
+            return
         if self._dirty:
             self._dirty = False
             self.refresh(layout=False)
@@ -212,18 +234,31 @@ class TerminalWidget(Widget):
 
     def on_unmount(self) -> None:
         # 布局重建会先 unmount 再 mount：只 detach reader，不销毁 PTY
+        import time as _t
+        try:
+            with open("/tmp/pietty_debug.log", "a") as _f:
+                _f.write(f"[{_t.perf_counter():.4f}] on_unmount id={self.id}\n")
+        except Exception:
+            pass
         self._detach_reader()
 
     def shutdown(self) -> None:
         """真正关闭 PTY（仅退出/关闭面板时调用）。
         用 os.close/os.kill 绕过 ptyprocess.close() 的 time.sleep 阻塞。
         """
+        import time as _t, os as _os
+        try:
+            with open("/tmp/pietty_debug.log", "a") as _f:
+                _f.write(f"[{_t.perf_counter():.4f}] shutdown enter fd={self._fd} pty={self._pty is not None}\n")
+        except Exception:
+            pass
         self._detach_reader()
         self._closed = True
         if self._pty is not None:
             pid = self._pty.pid
             try:
-                os.close(self._fd) if self._fd is not None else None
+                if self._fd is not None:
+                    os.close(self._fd)
             except OSError:
                 pass
             try:
@@ -236,6 +271,11 @@ class TerminalWidget(Widget):
                 pass
         self._pty = None
         self._fd = None
+        try:
+            with open("/tmp/pietty_debug.log", "a") as _f:
+                _f.write(f"[{_t.perf_counter():.4f}] shutdown done\n")
+        except Exception:
+            pass
 
     def on_resize(self, event) -> None:
         r, c = self.size.height, self.size.width
@@ -246,27 +286,35 @@ class TerminalWidget(Widget):
             self._pty.setwinsize(r, c)
 
     def render(self) -> Text:
-        if self._term_cache is None:
+        if self._term_cache is None and not self._refresh_paused:
             self._term_cache = screen_to_rich(self.model.screen)
-        return self._term_cache
+        return self._term_cache or _PAUSED_TEXT
 
-    def on_key(self, event) -> None:
-        if self._pty is None or self._fd is None:
+    def send_key(self, key: str, character: str | None) -> None:
+        """由 App.on_key 路由调用: 把按键转为字节写入 PTY（insert 模式）。
+
+        焦点不再设在 TerminalWidget 上（避免在溢出的 HorizontalScroll 中
+        聚焦导致 Textual 全屏重绘风暴），因此按键统一由 App 路由。
+        """
+        if self._pty is None or self._fd is None or self._closed:
             return
-        # escape 让 App 处理模式切换（先 return，不写 PTY）
-        if event.key == "escape":
-            return
-        # 仅 insert 模式透传 shell；normal 模式由 App 拦截命令键
-        if getattr(self.app, "modes", None) is not None:
-            if self.app.modes.current != "insert":
-                return
-        b = self.model.key_to_bytes(event.key,
-                                   getattr(event, "character", None))
+        b = self.model.key_to_bytes(key, character)
         if b is None:
             return
         try:
             os.write(self._fd, b)
         except OSError:
             pass
+
+    def on_key(self, event) -> None:
+        # 兜底: 若 widget 仍意外获得焦点，按 insert 模式透传
+        if self._pty is None or self._fd is None:
+            return
+        if event.key == "escape":
+            return
+        if getattr(self.app, "modes", None) is not None:
+            if self.app.modes.current != "insert":
+                return
+        self.send_key(event.key, getattr(event, "character", None))
         event.prevent_default()
-        event.stop()  # 阻止冒泡，避免与 C-x 前缀处理冲突
+        event.stop()
