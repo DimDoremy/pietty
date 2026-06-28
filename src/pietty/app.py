@@ -635,7 +635,7 @@ class PiettyApp(App):
                 event.prevent_default()
                 event.stop()
                 return
-            if key == ";":
+            if key in (";", "semicolon"):
                 self._prefix_pending = True
                 event.prevent_default()
                 event.stop()
