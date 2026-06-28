@@ -110,6 +110,7 @@ class PiettyApp(App):
         self._close_pending: int | None = None
         self._pane_seq: int = 0
         self._overview: bool = False
+        self._last_escape_time: float = 0  # Alt+key 检测（ESC+key 合成）
         try:
             self._saved_termios = termios.tcgetattr(sys.stdin.fileno())
         except Exception:
@@ -497,6 +498,19 @@ class PiettyApp(App):
     # ---- 按键路由 ----
     def on_key(self, event) -> None:
         key = event.key
+
+        # 终端可能把 Alt+key 拆成 ESC + key 两个事件。
+        # 如果一个普通按键紧跟在 escape 之后（<50ms），合成 alt+key。
+        now = time.perf_counter()
+        if (self._last_escape_time > 0
+                and now - self._last_escape_time < 0.05
+                and key != "escape"):
+            key = "alt+" + key
+            self._last_escape_time = 0
+        elif key == "escape":
+            self._last_escape_time = now
+        else:
+            self._last_escape_time = 0
 
         # 关闭确认待处理: 拦截 k/b/escape
         if self._close_pending is not None:
