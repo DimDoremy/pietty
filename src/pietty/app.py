@@ -223,13 +223,6 @@ class PiettyApp(App):
         if w:
             asyncio.create_task(self._close_task(w))
 
-    def _do_close(self, idx: int) -> None:
-        """旧版: 从平直列表按索引关闭。由 _do_close_grid 代替。"""
-        w = self._panes.pop(idx)
-        self.sidebar.remove_entry_by_seq(w)
-        self._focused = min(idx, len(self._panes) - 1) if self._panes else 0
-        asyncio.create_task(self._close_task(w))
-
     @staticmethod
     def _has_children(pid: int) -> bool:
         """检查 PID 是否有运行中的子进程（用于判断 shell 内是否有命令在跑）。
@@ -261,15 +254,6 @@ class PiettyApp(App):
         except Exception:
             pass
         return False
-
-    def _do_close(self, idx: int) -> None:
-        """实际关闭 pane（异步 task，避免同步 remove + layout 卡死）。"""
-        _dbg("_do_close enter idx=%d", idx)
-        self.sidebar.remove_entry(idx)
-        w = self._panes.pop(idx)
-        self._focused = min(idx, len(self._panes) - 1) if self._panes else 0
-        _dbg("_do_close: popped, panes=%d focused=%d", len(self._panes), self._focused)
-        asyncio.create_task(self._close_task(w))
 
     async def _close_task(self, w: TerminalWidget) -> None:
         """关闭 task：shutdown -> remove -> layout。"""
@@ -442,7 +426,7 @@ class PiettyApp(App):
                 pass
             return
         count = len(self._panes)
-        pos = f"[{self._focused + 1}/{count}]" if count else "[-]"
+        pos = f"[{self._focused_row + 1},{self._focused_col + 1}/{count}]" if count else "[-]"
         size_lbl = ""
         fw = self.focused_widget
         if fw is not None:
