@@ -318,11 +318,7 @@ class PiettyApp(App):
             self._refresh_status()
 
     def _move_pane(self, d_tab: int, d_col: int) -> None:
-        """Alt+快捷键移动当前 pane。
-
-        d_tab != 0 (Alt+j/k): 把 pane 移到相邻 tab（行），边界时新建 tab。
-        d_col != 0 (Alt+h/l): 在当前 tab 内左右交换 pane 顺序。
-        """
+        """Alt+快捷键移动当前 pane。"""
         if not self._grid:
             return
         r, c = self._focused_row, self._focused_col
@@ -374,13 +370,19 @@ class PiettyApp(App):
         self._refresh_status()
 
     def _rebuild_sidebar(self) -> None:
-        """根据当前网格重建侧边栏（用于 tab 插入/删除后重新编号）。"""
+        """根据当前网格更新侧边栏编号（不调 remove() 避免合成器死锁）。"""
         sb = self.sidebar
-        for child in list(sb.children):
-            child.remove()
-        sb._entries.clear()
-        for i in range(len(self._grid)):
+        children = list(sb.children)
+        n_tabs = len(self._grid)
+        for i, child in enumerate(children):
+            if i < n_tabs:
+                child.display = True
+                child.update(str(i + 1))
+            else:
+                child.display = False
+        for i in range(len(children), n_tabs):
             sb.add_entry(str(i + 1))
+        sb._entries = [str(i + 1) for i in range(n_tabs)]
         sb.set_highlight(self._focused_row)
 
     def _sync_pane_visibility(self) -> None:
