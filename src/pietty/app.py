@@ -41,10 +41,11 @@ SIZE_TIERS: list[float] = [0.5, 2 / 3, 1.0, 1 / 3]
 _SIZE_LABEL = {1.0: "全屏", 2 / 3: "2/3", 0.5: "1/2", 1 / 3: "1/3"}
 
 _NORMAL_HINTS = [
-    ("j/k", "j k 切换面板"),
-    ("n", "n 新建"),
-    ("r", "r 调整大小"),
+    ("h/l", "h l 切换shell"),
+    ("j/k", "j k 切换tab"),
+    ("n", "n 新建shell"),
     ("c", "c 关闭"),
+    ("r", "r 调整大小"),
     ("g", "g 概览"),
     ("q", "q 退出"),
 ]
@@ -330,13 +331,11 @@ class PiettyApp(App):
         self._focus_and_scroll()
 
     def _sync_pane_visibility(self) -> None:
-        """仅聚焦的 pane 可见。"""
+        """显示当前 tab（行）的所有 pane，隐藏其他行。"""
         for i, w in enumerate(self._panes):
             visible = False
             if self._grid and self._focused_row < len(self._grid):
-                row = self._grid[self._focused_row]
-                if self._focused_col < len(row):
-                    visible = (row[self._focused_col] == i)
+                visible = i in self._grid[self._focused_row]
             w.display = visible or self._overview
 
     def _toggle_overview(self) -> None:
@@ -431,7 +430,7 @@ class PiettyApp(App):
                 pass
             return
         count = len(self._panes)
-        pos = f"[{self._focused_row + 1},{self._focused_col + 1}/{count}]" if count else "[-]"
+        pos = f"[T{self._focused_row + 1} S{self._focused_col + 1}/{count}]" if count else "[-]"
         size_lbl = ""
         fw = self.focused_widget
         if fw is not None:
