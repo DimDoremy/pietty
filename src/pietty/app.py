@@ -44,8 +44,8 @@ _NORMAL_HINTS = [
     ("h/l", "h l 切换shell"),
     ("j/k", "j k 切换tab"),
     ("n", "n 新建shell"),
+    (";", "; 前缀=alt操作"),
     ("c", "c 关闭"),
-    ("r", "r 调整大小"),
     ("g", "g 概览"),
     ("q", "q 退出"),
 ]
@@ -112,6 +112,7 @@ class PiettyApp(App):
         self._overview: bool = False
         self._overview_input: str = ""
         self._last_escape_time: float = 0  # Alt+key 检测（ESC+key 合成）
+        self._prefix_pending: bool = False  # ; 前缀等待第二个键
         try:
             self._saved_termios = termios.tcgetattr(sys.stdin.fileno())
         except Exception:
@@ -394,27 +395,45 @@ class PiettyApp(App):
             w.display = visible or self._overview
 
     def _toggle_overview(self) -> None:
-        """g: 切换概览模式。显示所有 pane 并标注坐标，可输入坐标跳转。"""
+        """g: 切换概览模式。显示所有 pane 并标注坐标和进程名。"""
         self._overview = not self._overview
         if self._overview:
             self._overview_input = ""
-            # 显示所有 pane 并标注坐标
-            for r, row in enumerate(self._grid):
-                for c, idx in enumerate(row):
-                    if idx < len(self._panes):
-                        w = self._panes[idx]
-                        w.display = True
-                        w.border_title = f"{r+1},{c+1}"
+            self._refresh_overview_labels()
             self._refresh_overview_status()
         else:
-            # 清除坐标标注
             for w in self._panes:
                 w.border_title = ""
             self._sync_pane_visibility()
             self._refresh_status()
 
+    def _refresh_overview_labels(self) -> None:
+        """更新概览中每个 pane 的坐标标签和运行进程名。"""
+        for r, row in enumerate(self._grid):
+            for c, idx in enumerate(row):
+                if idx < len(self._panes):
+                    w = self._panes[idx]
+                    w.display = True
+                    proc = self._pane_process_name(w)
+                    w.border_title = f"{r+1},{c+1}" + (f" {proc}" if proc else "")
+
+    @staticmethod
+    def _pane_process_name(w: TerminalWidget) -> str:
+        """读取 pane 当前运行的前台进程名（用于概览显示）。"""
+        if w._pty is None or w._pty.pid is None:
+            return ""
+        try:
+            with open(f"/proc/{w._pty.pid}/task/{w._pty.pid}/children") as f:
+                children = f.read().strip().split()
+            if children:
+                with open(f"/proc/{children[0]}/comm") as f:
+                    return f.read().strip()
+        except OSError:
+            pass
+        return ""
+
     def _overview_key(self, key: str) -> bool:
-        """概览模式下处理按键。返回 True 表示已消费。"""
+        """概览模式下处理按键。"""
         if key in ("g", "escape"):
             self._toggle_overview()
             return True
@@ -425,24 +444,22 @@ class PiettyApp(App):
             self._overview_input = self._overview_input[:-1]
             self._refresh_overview_status()
             return True
-        if (key.isdigit()
-                or (key == "," and self._overview_input
-                    and "," not in self._overview_input)):
+        # 最多两位数字：第一位=tab，第二位=shell
+        if key.isdigit() and len(self._overview_input) < 2:
             self._overview_input += key
             self._refresh_overview_status()
             return True
-        return True  # 概览模式吞掉所有其他键
+        return True  # 吞掉其他键
 
     def _overview_goto(self) -> None:
-        """解析概览输入并跳转。"""
+        """解析概览输入并跳转（两位数字：第一位 tab，第二位 shell）。"""
         inp = self._overview_input.strip()
         self._overview = False
         for w in self._panes:
             w.border_title = ""
         try:
-            parts = inp.split(",")
-            r = int(parts[0]) - 1
-            c = int(parts[1]) - 1 if len(parts) > 1 else 0
+            r = int(inp[0]) - 1 if len(inp) >= 1 else 0
+            c = int(inp[1]) - 1 if len(inp) >= 2 else 0
             if 0 <= r < len(self._grid) and 0 <= c < len(self._grid[r]):
                 self._focused_row = r
                 self._focused_col = c
@@ -455,7 +472,9 @@ class PiettyApp(App):
     def _refresh_overview_status(self) -> None:
         bar = self.query_one(StatusBar)
         bar.set_class(False, "mode-insert")
-        bar.update(f"-- 概览 --  输入坐标跳转（如 1,2）：{self._overview_input}_"
+        inp_display = self._overview_input or "_"
+        hint = "输入：首位=tab 次位=shell（如 12=第1tab第2shell）"
+        bar.update(f"-- 概览 -- {hint}  当前输入：{inp_display}"
                    "   (Enter 确认  g/esc 退出)")
 
     # ---- 布局/滚动 ----
@@ -607,6 +626,20 @@ class PiettyApp(App):
             return
 
         if self.modes.current == "normal":
+            # ; 前缀：等下一个键做 alt 等价操作
+            if self._prefix_pending:
+                self._prefix_pending = False
+                alt_key = "alt+" + key
+                _dbg("prefix→ %r", alt_key)
+                self._handle_normal_command(alt_key)
+                event.prevent_default()
+                event.stop()
+                return
+            if key == ";":
+                self._prefix_pending = True
+                event.prevent_default()
+                event.stop()
+                return
             self._handle_normal_command(key)
             event.prevent_default()
             event.stop()
