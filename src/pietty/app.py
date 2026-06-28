@@ -208,8 +208,7 @@ class PiettyApp(App):
             self._refresh_status(pending_close=True)
             return
         if len(self._panes) <= 1:
-            _dbg("_close_pane: only 1 pane, quit process")
-            self._quit_now()
+            _dbg("_close_pane: only 1 pane, keep it")
             return
         self._do_close_grid(self._focused_row, self._focused_col)
 
@@ -494,34 +493,39 @@ class PiettyApp(App):
 
     # ---- 状态栏 ----
     def _refresh_status(self, pending_close: bool = False) -> None:
-        bar = self.query_one(StatusBar)
+        try:
+            bar = self.query_one(StatusBar)
+        except Exception:
+            return
         if self.modes.current == "insert":
             bar.update("-- INSERT --   "
                        + "  ".join(t for _, t in _INSERT_HINTS))
             bar.set_class(True, "mode-insert")
-            return
-        if pending_close:
+        elif pending_close:
             bar.set_class(False, "mode-insert")
             bar.update("-- CLOSE? --   (k) 终止  (b) 保留后台  (escape) 取消")
             _dbg("_refresh_status: set _refresh_paused on %d panes", len(self._panes))
             for w in self._panes:
                 w._refresh_paused = True
-            # 保险：5秒后自动取消 pending，防止按键无法送达时永久卡死
             try:
                 loop = asyncio.get_event_loop()
                 loop.call_later(5.0, self._timeout_pending)
             except Exception:
                 pass
-            return
-        count = len(self._panes)
-        pos = f"[T{self._focused_row + 1} S{self._focused_col + 1}/{count}]" if count else "[-]"
-        size_lbl = ""
-        fw = self.focused_widget
-        if fw is not None:
-            size_lbl = " " + _SIZE_LABEL.get(fw.size_fraction, "?")
-        bar.update(f"-- NORMAL -- {pos}{size_lbl}   "
-                   + "  ".join(t for _, t in _NORMAL_HINTS))
-        bar.set_class(False, "mode-insert")
+        else:
+            count = len(self._panes)
+            pos = f"[T{self._focused_row + 1} S{self._focused_col + 1}/{count}]" if count else "[-]"
+            bar.update(f"-- NORMAL -- {pos}   "
+                       + "  ".join(t for _, t in _NORMAL_HINTS))
+            bar.set_class(False, "mode-insert")
+        bar.refresh()
+        self.call_after_refresh(self._force_bar_refresh)
+
+    def _force_bar_refresh(self) -> None:
+        try:
+            self.query_one(StatusBar).refresh()
+        except Exception:
+            pass
 
     # ---- 按键路由 ----
     def on_key(self, event) -> None:
@@ -569,7 +573,7 @@ class PiettyApp(App):
                 self._close_pending = None
                 _dbg("pending: k confirm")
                 if len(self._panes) <= 1:
-                    self._quit_now()
+                    return  # 保留最后一个 shell
                 else:
                     self._do_close_grid(row, col)
             elif key == "b":
