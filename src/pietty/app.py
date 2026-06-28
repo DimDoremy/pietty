@@ -9,11 +9,13 @@ import threading
 import time
 
 from textual.app import App, ComposeResult
-from textual.containers import HorizontalScroll
+from textual.containers import HorizontalScroll, Horizontal
 from textual.widgets import Static
 
 from pietty.mode import ModeState
 from pietty.terminal import TerminalWidget
+from pietty.config import load as load_config, css_vars
+from pietty.sidebar import Sidebar
 
 
 _DEBUG_LOG = None
@@ -39,21 +41,20 @@ SIZE_TIERS: list[float] = [0.5, 2 / 3, 1.0, 1 / 3]
 _SIZE_LABEL = {1.0: "全屏", 2 / 3: "2/3", 0.5: "1/2", 1 / 3: "1/3"}
 
 _NORMAL_HINTS = [
-    ("i", "i 插入"),
+    ("j/k", "j k 切换面板"),
     ("n", "n 新建"),
-    ("h", "h 左 / l 右"),
     ("r", "r 调整大小"),
     ("c", "c 关闭"),
+    ("g", "g 概览"),
     ("q", "q 退出"),
 ]
 _INSERT_HINTS = [("escape", "Esc 回 normal")]
 
 
-class PaneScroll(HorizontalScroll):
-    """承载所有 TerminalWidget 的水平滚动容器。"""
+class PaneContainer(HorizontalScroll):
+    """承载当前聚焦的 TerminalWidget。非聚焦 pane 以 display=False 隐藏。"""
 
     def on_resize(self, event) -> None:
-        # 终端尺寸变化时，按各 pane 的比例重算宽度。
         try:
             self.app._apply_all_sizes()
         except Exception:
@@ -67,9 +68,12 @@ class StatusBar(Static):
 class PiettyApp(App):
     CSS = """
     Screen { layout: vertical; }
-    PaneScroll { height: 1fr; }
+    #main-row { height: 1fr; }
+    Sidebar { width: 16; }
+    PaneContainer { height: 100%; width: 1fr; }
     TerminalWidget {
         height: 100%;
+        width: 100%;
         border: round $primary;
     }
     TerminalWidget.focused-pane { border: round $accent; }
@@ -84,12 +88,20 @@ class PiettyApp(App):
         background: $success 50%;
         color: $text;
     }
+    #overlay {
+        layout: grid;
+        grid-size: 2 2;
+        height: 100%;
+    }
     """
 
     BINDINGS: list = []
 
     def __init__(self) -> None:
         super().__init__()
+        # 加载配置并注入 CSS 变量
+        self._cfg = load_config()
+        self.CSS = css_vars(self._cfg.theme) + self.CSS
         self._panes: list[TerminalWidget] = []
         self._focused: int = 0
         self.modes = ModeState()
@@ -102,14 +114,21 @@ class PiettyApp(App):
             self._saved_termios = None
 
     def compose(self) -> ComposeResult:
-        yield PaneScroll()
+        with Horizontal(id="main-row"):
+            yield Sidebar()
+            yield PaneContainer()
         yield StatusBar("")
 
     def on_mount(self) -> None:
         self._new_pane()
+        self._sync_pane_visibility()
         self._refresh_status()
 
     # ---- pane 管理 ----
+    @property
+    def sidebar(self) -> Sidebar:
+        return self.query_one(Sidebar)
+
     @property
     def focused_widget(self) -> TerminalWidget | None:
         if 0 <= self._focused < len(self._panes):
@@ -117,19 +136,23 @@ class PiettyApp(App):
         return None
 
     def _new_pane(self) -> None:
-        """新建 pane 并追加到右侧。"""
+        """新建 pane。"""
         self._pane_seq += 1
         w = TerminalWidget(id=f"pane-{self._pane_seq}")
         self._panes.append(w)
         self._focused = len(self._panes) - 1
-        scroll = self.query_one(PaneScroll)
-        asyncio.create_task(self._mount_and_focus(w, scroll))
+        container = self.pane_container
+        asyncio.create_task(self._mount_and_focus(w, container))
 
-    async def _mount_and_focus(self, w: TerminalWidget, scroll: PaneScroll) -> None:
-        await scroll.mount(w)
+    async def _mount_and_focus(self, w: TerminalWidget,
+                               container: PaneContainer | None = None) -> None:
+        if container is None:
+            container = self.pane_container
+        await container.mount(w)
+        self.sidebar.add_entry(f"#{self._pane_seq}")
+        self._sync_pane_visibility()
         self._apply_pane_size(w)
         self._focus_and_scroll()
-        # 强制重算(延迟一帧, 避免连续 mount 时重入)
         self.call_after_refresh(self._force_layout)
 
     def _close_pane(self) -> None:
@@ -188,8 +211,9 @@ class PiettyApp(App):
     def _do_close(self, idx: int) -> None:
         """实际关闭 pane（异步 task，避免同步 remove + layout 卡死）。"""
         _dbg("_do_close enter idx=%d", idx)
+        self.sidebar.remove_entry(idx)
         w = self._panes.pop(idx)
-        self._focused = min(idx, len(self._panes) - 1)
+        self._focused = min(idx, len(self._panes) - 1) if self._panes else 0
         _dbg("_do_close: popped, panes=%d focused=%d", len(self._panes), self._focused)
         asyncio.create_task(self._close_task(w))
 
@@ -237,7 +261,24 @@ class PiettyApp(App):
         if n == 0:
             return
         self._focused = (self._focused + delta) % n
+        self.sidebar.set_highlight(self._focused)
+        self._sync_pane_visibility()
         self._focus_and_scroll()
+        self._refresh_status()
+
+    def _sync_pane_visibility(self) -> None:
+        """仅聚焦的 pane 可见（其它 display=False）。覆盖模式除外。"""
+        for i, w in enumerate(self._panes):
+            w.display = (i == self._focused)
+
+    def _toggle_overview(self) -> None:
+        """g: 切换概览模式（显示所有 pane 平铺）。"""
+        self._overview = not getattr(self, "_overview", False)
+        if self._overview:
+            for w in self._panes:
+                w.display = True
+        else:
+            self._sync_pane_visibility()
 
     # ---- 布局/滚动 ----
     def _force_layout(self) -> None:
@@ -250,9 +291,9 @@ class PiettyApp(App):
 
     # ---- 面板尺寸 ----
     def _viewport_cols(self) -> int:
-        """当前可用宽度（列）。优先 PaneScroll 的尺寸，回退到屏幕宽度。"""
+        """当前可用宽度（列）。优先 PaneContainer 的尺寸，回退到屏幕宽度。"""
         try:
-            w = self.query_one(PaneScroll).size.width
+            w = self.pane_container.size.width
             if w > 0:
                 return w
         except Exception:
@@ -291,14 +332,13 @@ class PiettyApp(App):
 
     def _focus_and_scroll(self) -> None:
         # 仅切换 "focused-pane" 视觉样式；不再调用 w.focus()。
-        # 原因: 在内容溢出 viewport 的 HorizontalScroll 中调用 widget.focus()
-        # 会触发 Textual(8.x) 每帧全屏重绘（渲染风暴），导致整个 app 卡死。
-        # 按键路由改为由 App.on_key 统一处理，无需 widget 焦点。
         for w in self._panes:
             w.remove_class("focused-pane")
         w = self.focused_widget
         if w is not None:
             w.add_class("focused-pane")
+        self.sidebar.set_highlight(self._focused)
+        self._sync_pane_visibility()
 
     # ---- 状态栏 ----
     def _refresh_status(self, pending_close: bool = False) -> None:
@@ -382,18 +422,18 @@ class PiettyApp(App):
         if key == "n":
             self._new_pane()
             self._refresh_status()
-        elif key == "h":
+        elif key in ("h", "k"):
             self._move_focus(-1)
             self._refresh_status()
-        elif key == "l":
+        elif key in ("l", "j"):
             self._move_focus(1)
             self._refresh_status()
         elif key == "c":
             self._close_pane()
-            # _close_pane 内部已调了 _refresh_status (pending 或 normal)，
-            # 此处不再调，避免把 pending 状态的状态栏覆盖回 NORMAL。
         elif key == "r":
             self._cycle_pane_size()
+        elif key == "g":
+            self._toggle_overview()
         elif key == "q":
             self._quit_now()
 
