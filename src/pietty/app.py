@@ -16,6 +16,7 @@ from pietty.mode import ModeState
 from pietty.terminal import TerminalWidget
 from pietty.config import load as load_config, css_vars
 from pietty.sidebar import Sidebar
+from pietty.overview import OverviewScreen
 
 
 _DEBUG_LOG = None
@@ -406,87 +407,22 @@ class PiettyApp(App):
             w.display = visible or self._overview
 
     def _toggle_overview(self) -> None:
-        """g: 切换概览模式。显示所有 pane 并标注坐标和进程名。"""
-        self._overview = not self._overview
+        """g: 唤起概览窗口（模态 Screen）。"""
         if self._overview:
-            self._overview_input = ""
-            self._refresh_overview_labels()
-            self._refresh_overview_status()
-        else:
-            for w in self._panes:
-                w.border_title = ""
-            self._sync_pane_visibility()
-            self._refresh_status()
+            return
+        self._overview = True
+        self.push_screen(OverviewScreen(self), self._on_overview_done)
 
-    def _refresh_overview_labels(self) -> None:
-        """更新概览中每个 pane 的坐标标签和运行进程名。"""
-        for r, row in enumerate(self._grid):
-            for c, idx in enumerate(row):
-                if idx < len(self._panes):
-                    w = self._panes[idx]
-                    w.display = True
-                    proc = self._pane_process_name(w)
-                    w.border_title = f"{r+1},{c+1}" + (f" {proc}" if proc else "")
-
-    @staticmethod
-    def _pane_process_name(w: TerminalWidget) -> str:
-        """读取 pane 当前运行的前台进程名（用于概览显示）。"""
-        if w._pty is None or w._pty.pid is None:
-            return ""
-        try:
-            with open(f"/proc/{w._pty.pid}/task/{w._pty.pid}/children") as f:
-                children = f.read().strip().split()
-            if children:
-                with open(f"/proc/{children[0]}/comm") as f:
-                    return f.read().strip()
-        except OSError:
-            pass
-        return ""
-
-    def _overview_key(self, key: str) -> bool:
-        """概览模式下处理按键。"""
-        if key in ("g", "escape"):
-            self._toggle_overview()
-            return True
-        if key == "enter":
-            self._overview_goto()
-            return True
-        if key == "backspace":
-            self._overview_input = self._overview_input[:-1]
-            self._refresh_overview_status()
-            return True
-        # 最多两位数字：第一位=tab，第二位=shell
-        if key.isdigit() and len(self._overview_input) < 2:
-            self._overview_input += key
-            self._refresh_overview_status()
-            return True
-        return True  # 吞掉其他键
-
-    def _overview_goto(self) -> None:
-        """解析概览输入并跳转（两位数字：第一位 tab，第二位 shell）。"""
-        inp = self._overview_input.strip()
+    def _on_overview_done(self, _result) -> None:
+        """概览窗口关闭后恢复。"""
         self._overview = False
-        for w in self._panes:
-            w.border_title = ""
-        try:
-            r = int(inp[0]) - 1 if len(inp) >= 1 else 0
-            c = int(inp[1]) - 1 if len(inp) >= 2 else 0
-            if 0 <= r < len(self._grid) and 0 <= c < len(self._grid[r]):
-                self._focused_row = r
-                self._focused_col = c
-        except (ValueError, IndexError):
-            pass
+        self._post_overview()
+
+    def _post_overview(self) -> None:
+        """概览退出后同步显示。"""
         self._sync_pane_visibility()
         self._focus_and_scroll()
         self._refresh_status()
-
-    def _refresh_overview_status(self) -> None:
-        bar = self.query_one(StatusBar)
-        bar.set_class(False, "mode-insert")
-        inp_display = self._overview_input or "_"
-        hint = "输入：首位=tab 次位=shell（如 12=第1tab第2shell）"
-        bar.update(f"-- 概览 -- {hint}  当前输入：{inp_display}"
-                   "   (Enter 确认  g/esc 退出)")
 
     # ---- 布局/滚动 ----
     def _force_layout(self) -> None:
@@ -600,13 +536,6 @@ class PiettyApp(App):
             self._last_escape_time = now
         else:
             self._last_escape_time = 0
-
-        # 概览模式：所有按键交给 _overview_key
-        if self._overview:
-            if self._overview_key(key):
-                event.prevent_default()
-                event.stop()
-                return
 
         # 关闭确认待处理: 拦截 k/b/escape
         if self._close_pending is not None:
