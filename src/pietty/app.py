@@ -560,19 +560,25 @@ class PiettyApp(App):
             self._quit_now()
 
     def _quit_now(self) -> None:
-        """关闭所有 PTY 并退出整个进程。
-
-        先尝试 Textual 的优雅退出（exit 发送 ExitApp 消息让消息泵解绕）；
-        同时挂一个守护线程兜底——若 0.5s 后进程仍未退出，则手动恢复
-        termios 后 os._exit 强制退出。进程若已正常退出，守护线程随
-        之销毁，不会误触发。
-
-        注意：不调 loop.stop()——那会导致 asyncio.run() 抛 RuntimeError
-        ("Event loop stopped before Future completed")。
-        """
+        """关闭所有 PTY 并退出整个进程。"""
         for w in self._panes:
             w.shutdown()
         self._panes.clear()
+        # 先恢复 termios（在替换 stdin 之前，确保 Textual 能正确恢复终端）
+        if self._saved_termios is not None:
+            try:
+                termios.tcsetattr(sys.stdin.fileno(), termios.TCSANOW,
+                                  self._saved_termios)
+            except Exception:
+                pass
+        # 将 stdin 替换为 /dev/null，使 Textual 输入线程的最终 read() 得到
+        # 干净的 EOF 而非 EIO（OSError errno 5），避免输入线程崩溃后 app 卡死。
+        try:
+            devnull_fd = os.open(os.devnull, os.O_RDONLY)
+            os.dup2(devnull_fd, 0)
+            os.close(devnull_fd)
+        except Exception:
+            pass
         self.exit()
         t = threading.Timer(0.5, self._force_exit)
         t.daemon = True
