@@ -130,6 +130,10 @@ class PiettyApp(App):
         return self.query_one(Sidebar)
 
     @property
+    def pane_container(self) -> PaneContainer:
+        return self.query_one(PaneContainer)
+
+    @property
     def focused_widget(self) -> TerminalWidget | None:
         if 0 <= self._focused < len(self._panes):
             return self._panes[self._focused]

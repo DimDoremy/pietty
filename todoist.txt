@@ -46,9 +46,9 @@ pietty MVP 实现清单（多面板 PTY）
     [T] 失败项回流修 render/terminal，不放过
     [T] commit: docs MVP ANSI/UTF-8 acceptance verified
 
---- 后续阶段（本次不做，仅占位提醒）---
-[P1] config.toml 加载 + theme 解析（合并默认，失败回退告警）
-[P1] tab 栏（复用 PaneTree，C-t 新建 / C-x b 切换）
+--- 后续阶段 ---
+[DONE] config.toml 加载 + theme 解析（合并默认，失败回退告警）
+[DONE] tab 栏（niri 风格左侧列表，j/k 切换，g 概览）
 [P2] 文件树侧边栏 + cwd 跟随（/proc/<pid>/cwd）
 [P2] 快捷键提示 footer（C-x ? 切换）
 [P3] 后台 job 托管 Route C（注入 trap，自托管子进程到新 tab，退出按任意键关）
