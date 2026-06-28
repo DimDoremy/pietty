@@ -222,6 +222,11 @@ class PiettyApp(App):
             del self._grid[row]
             self.sidebar.remove_entry_by_seq(str(row + 1))
         self._panes.pop(idx)
+        # 关键：pop 后所有 > idx 的网格索引需要 -1，否则索引失效
+        for grid_row in self._grid:
+            for c in range(len(grid_row)):
+                if grid_row[c] > idx:
+                    grid_row[c] -= 1
 
         # 调整焦点
         nr = len(self._grid)
@@ -535,10 +540,10 @@ class PiettyApp(App):
         key = event.key
 
         # 终端可能把 Alt+key 拆成 ESC + key 两个事件。
-        # 如果一个普通按键紧跟在 escape 之后（<150ms），合成 alt+key。
+        # 如果一个普通按键紧跟在 escape 之后（<50ms），合成 alt+key。
         now = time.perf_counter()
         if (self._last_escape_time > 0
-                and now - self._last_escape_time < 0.15
+                and now - self._last_escape_time < 0.05
                 and key != "escape"):
             key = "alt+" + key
             self._last_escape_time = 0
@@ -588,6 +593,7 @@ class PiettyApp(App):
             return
 
         if self.modes.transition(key):
+            self._last_escape_time = 0  # Escape 被当做模式切换消费了，不再当 Alt 前缀
             self._refresh_status()
             event.prevent_default()
             event.stop()
