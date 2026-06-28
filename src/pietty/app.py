@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import os
 import sys
 import termios
@@ -686,4 +687,7 @@ class PiettyApp(App):
 
 
 def main() -> None:
+    # GC 调优：减少高频渲染下的 GC 停顿
+    gc.set_threshold(50000, 200, 200)  # 默认 (700,10,10)，大幅降低 GC 频率
+    gc.freeze()  # 启动后标记所有当前对象为不可移动（跳过后续 GC 扫描）
     PiettyApp().run()
