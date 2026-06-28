@@ -418,17 +418,17 @@ class PiettyApp(App):
         self.push_screen(OverviewScreen(self), self._on_overview_done)
 
     def _on_overview_done(self, _result) -> None:
-        """概览窗口关闭后恢复。"""
+        """概览窗口关闭后恢复（实际同步由 set_timer 负责）。"""
         self._overview = False
-        self._post_overview()
 
     def _post_overview(self) -> None:
         """概览退出后同步显示。"""
+        _dbg("_post_overview: mode=%s focused=(%d,%d)",
+              self.modes.current, self._focused_row, self._focused_col)
         self._sync_pane_visibility()
         self._force_layout()
         self._focus_and_scroll()
         self._refresh_status()
-        # 再延迟一帧刷新一次，确保状态栏（INSERT/NORMAL）和滚动都到位
         self.call_after_refresh(self._refresh_status)
 
     # ---- 布局/滚动 ----

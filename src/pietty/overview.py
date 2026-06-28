@@ -175,8 +175,10 @@ class OverviewScreen(Screen):
         self._highlight()
 
     def action_quit_overview(self) -> None:
-        self._app._overview = False
+        app = self._app
+        app._overview = False
         self.app.pop_screen()
+        app.set_timer(0.05, app._post_overview)
 
     def on_key(self, event) -> None:
         key = event.key
@@ -237,11 +239,15 @@ class OverviewScreen(Screen):
         if cur is None:
             return
         r, c, _ = cur
-        self._app._focused_row = r
-        self._app._focused_col = c
-        self._app.modes.current = mode
-        self._app._overview = False  # 先清除标志，避免 on_key guard 吞键
+        app = self._app
+        app._focused_row = r
+        app._focused_col = c
+        app.modes.current = mode
+        app._overview = False
         self.app.pop_screen()
+        # 用定时器确保在屏幕完全弹出后执行 DOM/bar 同步（双重保险）
+        app.set_timer(0.05, app._post_overview)
+        app.set_timer(0.2, app._post_overview)
 
     def _move_selected(self) -> None:
         """把选中的 pane 移到当前主界面聚焦 pane 的下方（同一 tab 末尾）。"""
