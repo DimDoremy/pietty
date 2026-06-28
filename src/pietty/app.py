@@ -48,7 +48,7 @@ _NORMAL_HINTS = [
     ("g", "g 概览"),
     ("q", "q 退出"),
 ]
-_INSERT_HINTS = [("escape", "Esc 回 normal")]
+_INSERT_HINTS = [("escape/Alt+q", "Esc Alt+q 回 normal")]
 
 
 class PaneContainer(HorizontalScroll):
@@ -69,7 +69,7 @@ class PiettyApp(App):
     CSS = """
     Screen { layout: vertical; }
     #main-row { height: 1fr; }
-    Sidebar { width: 16; }
+    Sidebar { width: 6; }
     PaneContainer { height: 100%; width: 1fr; }
     TerminalWidget {
         height: 100%;
@@ -99,15 +99,16 @@ class PiettyApp(App):
 
     def __init__(self) -> None:
         super().__init__()
-        # 加载配置并注入 CSS 变量
         self._cfg = load_config()
         self.CSS = css_vars(self._cfg.theme) + self.CSS
         self._panes: list[TerminalWidget] = []
-        self._focused: int = 0
+        self._grid: list[list[int]] = []  # 网格: 每行是 pane 索引列表
+        self._focused_row: int = 0
+        self._focused_col: int = 0
         self.modes = ModeState()
-        self._close_pending: int | None = None  # 关闭确认: 待关闭 pane 索引
-        self._pane_seq: int = 0  # 单调递增的 pane ID 序号（避免与隐藏 widget 冲突）
-        # 保存原始终端属性，用于强制退出时恢复（避免留下 raw mode）
+        self._close_pending: int | None = None
+        self._pane_seq: int = 0
+        self._overview: bool = False
         try:
             self._saved_termios = termios.tcgetattr(sys.stdin.fileno())
         except Exception:
@@ -135,16 +136,36 @@ class PiettyApp(App):
 
     @property
     def focused_widget(self) -> TerminalWidget | None:
-        if 0 <= self._focused < len(self._panes):
-            return self._panes[self._focused]
+        if self._grid and 0 <= self._focused_row < len(self._grid):
+            row = self._grid[self._focused_row]
+            if 0 <= self._focused_col < len(row):
+                idx = row[self._focused_col]
+                if 0 <= idx < len(self._panes):
+                    return self._panes[idx]
         return None
 
-    def _new_pane(self) -> None:
-        """新建 pane。"""
+    def _new_pane(self, new_row: bool = False) -> None:
+        """新建 pane。
+
+        new_row=False: 在当前行当前列右侧插入。
+        new_row=True:  在当前行下方新建一行（新的"列"）。
+        """
         self._pane_seq += 1
         w = TerminalWidget(id=f"pane-{self._pane_seq}")
         self._panes.append(w)
-        self._focused = len(self._panes) - 1
+        idx = len(self._panes) - 1
+
+        if new_row or not self._grid:
+            # 新行
+            self._grid.insert(self._focused_row + 1, [idx])
+            self._focused_row += 1
+            self._focused_col = 0
+        else:
+            # 当前行右插
+            row = self._grid[self._focused_row]
+            row.insert(self._focused_col + 1, idx)
+            self._focused_col += 1
+
         container = self.pane_container
         asyncio.create_task(self._mount_and_focus(w, container))
 
@@ -153,32 +174,61 @@ class PiettyApp(App):
         if container is None:
             container = self.pane_container
         await container.mount(w)
-        self.sidebar.add_entry(f"#{self._pane_seq}")
+        self.sidebar.add_entry(str(self._pane_seq))
         self._sync_pane_visibility()
         self._apply_pane_size(w)
         self._focus_and_scroll()
         self.call_after_refresh(self._force_layout)
 
     def _close_pane(self) -> None:
-        _dbg("_close_pane enter, panes=%d focused=%d", len(self._panes), self._focused)
+        _dbg("_close_pane enter, rows=%d", len(self._grid))
         if not self._panes:
             return
-        idx = self._focused
-        w = self._panes[idx]
-        # 先检查 shell 是否有运行中的子进程（不论 pane 数量）
+        w = self.focused_widget
+        if w is None:
+            return
         has_running = (w._pty is not None and w._pty.pid is not None
                        and self._has_children(w._pty.pid))
-        _dbg("_close_pane: idx=%d has_running=%s", idx, has_running)
+        _dbg("_close_pane: has_running=%s", has_running)
         if has_running:
-            self._close_pending = idx
+            self._close_pending = (self._focused_row, self._focused_col)
             self._refresh_status(pending_close=True)
             return
-        # 无运行中子进程: 直接关。仅剩 1 个 pane 时退出整个进程。
         if len(self._panes) <= 1:
             _dbg("_close_pane: only 1 pane, quit process")
             self._quit_now()
             return
-        self._do_close(idx)
+        self._do_close_grid(self._focused_row, self._focused_col)
+
+    def _do_close_grid(self, row: int, col: int) -> None:
+        """关闭网格中 (row, col) 位置的 pane。"""
+        idx = self._grid[row][col]
+        w = self._panes[idx]
+        self.sidebar.remove_entry_by_seq(w.id.replace("pane-", ""))
+        # 从网格和列表移除
+        del self._grid[row][col]
+        if not self._grid[row]:
+            del self._grid[row]
+        self._panes.pop(idx)
+
+        # 调整焦点
+        nr = len(self._grid)
+        if nr == 0:
+            self._focused_row = self._focused_col = 0
+        else:
+            self._focused_row = min(self._focused_row, nr - 1)
+            self._focused_col = min(self._focused_col,
+                                    len(self._grid[self._focused_row]) - 1)
+
+        if w:
+            asyncio.create_task(self._close_task(w))
+
+    def _do_close(self, idx: int) -> None:
+        """旧版: 从平直列表按索引关闭。由 _do_close_grid 代替。"""
+        w = self._panes.pop(idx)
+        self.sidebar.remove_entry_by_seq(w)
+        self._focused = min(idx, len(self._panes) - 1) if self._panes else 0
+        asyncio.create_task(self._close_task(w))
 
     @staticmethod
     def _has_children(pid: int) -> bool:
@@ -260,20 +310,45 @@ class PiettyApp(App):
             _dbg("_timeout_pending: auto-cancel after 5s")
             self._cancel_pending()
 
-    def _move_focus(self, delta: int) -> None:
-        n = len(self._panes)
-        if n == 0:
+    def _move_focus(self, d_row: int, d_col: int) -> None:
+        """在网格中移动焦点。"""
+        if not self._grid:
             return
-        self._focused = (self._focused + delta) % n
-        self.sidebar.set_highlight(self._focused)
+        nr = len(self._grid)
+        new_r = max(0, min(self._focused_row + d_row, nr - 1))
+        new_c = max(0, min(self._focused_col + d_col, len(self._grid[new_r]) - 1))
+        if (new_r, new_c) != (self._focused_row, self._focused_col):
+            self._focused_row, self._focused_col = new_r, new_c
+            self._focus_and_scroll()
+            self._refresh_status()
+
+    def _move_pane(self, d_row: int, d_col: int) -> None:
+        """Alt+h/j/k/l: 移动当前 pane 到相邻行列（交换位置）。"""
+        if not self._grid:
+            return
+        r, c = self._focused_row, self._focused_col
+        tr, tc = r + d_row, c + d_col
+        if tr < 0 or tr >= len(self._grid) or tc < 0 or tc >= len(self._grid[tr]):
+            return  # 目标边界外
+        # 在 _panes 中交换索引
+        cur_idx = self._grid[r][c]
+        tgt_idx = self._grid[tr][tc]
+        self._panes[cur_idx], self._panes[tgt_idx] = self._panes[tgt_idx], self._panes[cur_idx]
+        # 在网格中交换
+        self._grid[r][c], self._grid[tr][tc] = self._grid[tr][tc], self._grid[r][c]
+        self._focused_row, self._focused_col = tr, tc
         self._sync_pane_visibility()
         self._focus_and_scroll()
-        self._refresh_status()
 
     def _sync_pane_visibility(self) -> None:
-        """仅聚焦的 pane 可见（其它 display=False）。覆盖模式除外。"""
+        """仅聚焦的 pane 可见。"""
         for i, w in enumerate(self._panes):
-            w.display = (i == self._focused)
+            visible = False
+            if self._grid and self._focused_row < len(self._grid):
+                row = self._grid[self._focused_row]
+                if self._focused_col < len(row):
+                    visible = (row[self._focused_col] == i)
+            w.display = visible or self._overview
 
     def _toggle_overview(self) -> None:
         """g: 切换概览模式（显示所有 pane 平铺）。"""
@@ -335,13 +410,14 @@ class PiettyApp(App):
         self._refresh_status()
 
     def _focus_and_scroll(self) -> None:
-        # 仅切换 "focused-pane" 视觉样式；不再调用 w.focus()。
         for w in self._panes:
             w.remove_class("focused-pane")
         w = self.focused_widget
         if w is not None:
             w.add_class("focused-pane")
-        self.sidebar.set_highlight(self._focused)
+        # 高亮侧边栏对应条目
+        flat = sum(len(self._grid[r]) for r in range(self._focused_row)) + self._focused_col
+        self.sidebar.set_highlight(flat)
         self._sync_pane_visibility()
 
     # ---- 状态栏 ----
@@ -383,14 +459,13 @@ class PiettyApp(App):
         if self._close_pending is not None:
             _dbg("pending key: %r", event.key)
             if key == "k":
-                idx = self._close_pending
+                row, col = self._close_pending
                 self._close_pending = None
                 _dbg("pending: k confirm")
-                # 确认终止: 若是最后一个 pane 则退出进程，否则关闭该 pane
                 if len(self._panes) <= 1:
                     self._quit_now()
                 else:
-                    self._do_close(idx)
+                    self._do_close_grid(row, col)
             elif key == "b":
                 _dbg("pending: b background")
                 self._cancel_pending()
@@ -424,14 +499,31 @@ class PiettyApp(App):
 
     def _handle_normal_command(self, key: str) -> None:
         if key == "n":
-            self._new_pane()
+            self._new_pane(new_row=False)
             self._refresh_status()
-        elif key in ("h", "k"):
-            self._move_focus(-1)
+        elif key == "alt+n":
+            self._new_pane(new_row=True)
             self._refresh_status()
-        elif key in ("l", "j"):
-            self._move_focus(1)
+        elif key in ("k",):
+            self._move_focus(-1, 0)
             self._refresh_status()
+        elif key in ("j",):
+            self._move_focus(1, 0)
+            self._refresh_status()
+        elif key in ("h",):
+            self._move_focus(0, -1)
+            self._refresh_status()
+        elif key in ("l",):
+            self._move_focus(0, 1)
+            self._refresh_status()
+        elif key == "alt+k":
+            self._move_pane(-1, 0)
+        elif key == "alt+j":
+            self._move_pane(1, 0)
+        elif key == "alt+h":
+            self._move_pane(0, -1)
+        elif key == "alt+l":
+            self._move_pane(0, 1)
         elif key == "c":
             self._close_pane()
         elif key == "r":

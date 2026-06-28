@@ -6,31 +6,31 @@ from textual.containers import Vertical
 
 
 class SidebarItem(Static):
-    """单个面板条目。"""
+    """单个面板编号（居中显示）。"""
 
     DEFAULT_CSS = """
     SidebarItem {
         padding: 0 1;
         width: 100%;
+        text-align: center;
     }
     SidebarItem.focused-item {
-        background: $accent 30%;
+        background: $accent 50%;
         color: $text;
     }
     """
 
 
 class Sidebar(Vertical):
-    """左侧面板列表。每个条目对应一个 TerminalWidget。"""
+    """左侧面板编号列表。每个条目对应一个 TerminalWidget。"""
 
     DEFAULT_CSS = """
     Sidebar {
-        width: 16;
+        width: 6;
         height: 100%;
         overflow-y: auto;
         background: $surface;
         border-right: solid $boost;
-        padding: 0 0;
     }
     """
 
@@ -43,12 +43,14 @@ class Sidebar(Vertical):
         self._entries.append(label)
         self.mount(SidebarItem(label))
 
-    def remove_entry(self, idx: int) -> None:
-        if 0 <= idx < len(self._entries):
-            self._entries.pop(idx)
-            children = list(self.children)
-            if idx < len(children):
-                children[idx].remove()
+    def remove_entry_by_seq(self, seq: int) -> None:
+        for i, entry in enumerate(self._entries):
+            if entry == str(seq):
+                self._entries.pop(i)
+                children = list(self.children)
+                if i < len(children):
+                    children[i].remove()
+                return
 
     def move_highlight(self, delta: int) -> int:
         n = len(self._entries)

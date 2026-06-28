@@ -35,7 +35,7 @@ class ModeState:
                 return True
             return False
         else:  # insert
-            if key == "escape":
+            if key in ("escape", "alt+q"):
                 self.current = "normal"
                 return True
             return False
