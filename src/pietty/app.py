@@ -110,6 +110,7 @@ class PiettyApp(App):
         self._close_pending: int | None = None
         self._pane_seq: int = 0
         self._overview: bool = False
+        self._overview_input: str = ""
         self._last_escape_time: float = 0  # Alt+key 检测（ESC+key 合成）
         try:
             self._saved_termios = termios.tcgetattr(sys.stdin.fileno())
@@ -391,13 +392,69 @@ class PiettyApp(App):
             w.display = visible or self._overview
 
     def _toggle_overview(self) -> None:
-        """g: 切换概览模式（显示所有 pane 平铺）。"""
-        self._overview = not getattr(self, "_overview", False)
+        """g: 切换概览模式。显示所有 pane 并标注坐标，可输入坐标跳转。"""
+        self._overview = not self._overview
         if self._overview:
-            for w in self._panes:
-                w.display = True
+            self._overview_input = ""
+            # 显示所有 pane 并标注坐标
+            for r, row in enumerate(self._grid):
+                for c, idx in enumerate(row):
+                    if idx < len(self._panes):
+                        w = self._panes[idx]
+                        w.display = True
+                        w.border_title = f"{r+1},{c+1}"
+            self._refresh_overview_status()
         else:
+            # 清除坐标标注
+            for w in self._panes:
+                w.border_title = ""
             self._sync_pane_visibility()
+            self._refresh_status()
+
+    def _overview_key(self, key: str) -> bool:
+        """概览模式下处理按键。返回 True 表示已消费。"""
+        if key in ("g", "escape"):
+            self._toggle_overview()
+            return True
+        if key == "enter":
+            self._overview_goto()
+            return True
+        if key == "backspace":
+            self._overview_input = self._overview_input[:-1]
+            self._refresh_overview_status()
+            return True
+        if (key.isdigit()
+                or (key == "," and self._overview_input
+                    and "," not in self._overview_input)):
+            self._overview_input += key
+            self._refresh_overview_status()
+            return True
+        return True  # 概览模式吞掉所有其他键
+
+    def _overview_goto(self) -> None:
+        """解析概览输入并跳转。"""
+        inp = self._overview_input.strip()
+        self._overview = False
+        for w in self._panes:
+            w.border_title = ""
+        try:
+            parts = inp.split(",")
+            r = int(parts[0]) - 1
+            c = int(parts[1]) - 1 if len(parts) > 1 else 0
+            if 0 <= r < len(self._grid) and 0 <= c < len(self._grid[r]):
+                self._focused_row = r
+                self._focused_col = c
+        except (ValueError, IndexError):
+            pass
+        self._sync_pane_visibility()
+        self._focus_and_scroll()
+        self._refresh_status()
+
+    def _refresh_overview_status(self) -> None:
+        bar = self.query_one(StatusBar)
+        bar.set_class(False, "mode-insert")
+        bar.update(f"-- 概览 --  输入坐标跳转（如 1,2）：{self._overview_input}_"
+                   "   (Enter 确认  g/esc 退出)")
 
     # ---- 布局/滚动 ----
     def _force_layout(self) -> None:
@@ -503,7 +560,7 @@ class PiettyApp(App):
         # 如果一个普通按键紧跟在 escape 之后（<50ms），合成 alt+key。
         now = time.perf_counter()
         if (self._last_escape_time > 0
-                and now - self._last_escape_time < 0.05
+                and now - self._last_escape_time < 0.1
                 and key != "escape"):
             key = "alt+" + key
             self._last_escape_time = 0
@@ -511,6 +568,13 @@ class PiettyApp(App):
             self._last_escape_time = now
         else:
             self._last_escape_time = 0
+
+        # 概览模式：所有按键交给 _overview_key
+        if self._overview:
+            if self._overview_key(key):
+                event.prevent_default()
+                event.stop()
+                return
 
         # 关闭确认待处理: 拦截 k/b/escape
         if self._close_pending is not None:
