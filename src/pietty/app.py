@@ -363,8 +363,19 @@ class PiettyApp(App):
             tc = c + d_col
             if tc < 0 or tc >= len(row):
                 return
+            # 交换网格索引
             row[c], row[tc] = row[tc], row[c]
             self._focused_col = tc
+            # 同步 DOM 顺序（move_child 用 NodeList 操作，不会触发合成器死锁）
+            focused_w = self._panes[cur_idx]
+            neighbor_w = self._panes[row[c]]
+            try:
+                if d_col > 0:
+                    self.pane_container.move_child(focused_w, after=neighbor_w)
+                else:
+                    self.pane_container.move_child(focused_w, before=neighbor_w)
+            except Exception as e:
+                _dbg("move_child err %r", e)
 
         self._sync_pane_visibility()
         self._focus_and_scroll()
