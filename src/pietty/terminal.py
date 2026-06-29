@@ -188,33 +188,40 @@ class TerminalWidget(Widget):
             return
 
         # 手动 alt-screen 支持（pyte 不处理 \x1b[?1049h/l）
-        if b"\x1b[?1049h" in data and not self._alt_screen:
+        # 必须在 feed_bytes 前处理：退出时先恢复再让 shell prompt 写入，
+        # 进入时先保存+清空再让 Atuin/vim 写入空白屏幕。
+        enter = b"\x1b[?1049h" in data
+        exit_alt = b"\x1b[?1049l" in data
+        if exit_alt and self._alt_screen and not enter:
+            # 退出 alt-screen：恢复保存的屏幕
+            self._alt_screen = False
+            if self._alt_screen_saved is not None:
+                screen = self.model.screen
+                for y, row_data in enumerate(self._alt_screen_saved):
+                    if y < screen.lines:
+                        for x, c in enumerate(row_data):
+                            if x < screen.columns:
+                                screen.buffer[y][x] = c
+                self._alt_screen_saved = None
+        elif enter and not self._alt_screen and not exit_alt:
+            # 进入 alt-screen：保存当前屏幕并清空
             self._alt_screen = True
-            # 保存当前屏幕（浅拷贝每个可见行的 Char 数据）
             self._alt_screen_saved = [
-                [c.copy() for c in line.values()]
+                [type(c)(**c._asdict()) for c in line.values()]
                 for line in self.model.screen.buffer
             ]
-        elif b"\x1b[?1049l" in data and self._alt_screen:
-            self._alt_screen = False
-
-        self.model.feed_bytes(data)
-
-        # alt-screen 退出时恢复保存的内容
-        if self._alt_screen_saved is not None and not self._alt_screen:
             screen = self.model.screen
-            for y, row_data in enumerate(self._alt_screen_saved):
-                if y < screen.lines:
-                    for x, c in enumerate(row_data):
-                        if x < screen.columns:
-                            screen.buffer[y][x] = c
-            self._alt_screen_saved = None
-
-        # pyte 不识别 1049 模式 → 强制清除序列中的模式设置，
-        # 确保 feed_bytes 后屏幕内容正确。
-        if b"\x1b[?1049" in data:
+            for y in range(screen.lines):
+                for x in range(screen.columns):
+                    screen.buffer[y][x] = screen.default_char()
             self._term_cache = None
             self._dirty = True
+            try:
+                self.refresh(layout=False)
+            except Exception:
+                pass
+
+        self.model.feed_bytes(data)
 
         # 用 pyte screen 的真实光标位置更新应答器
         # 用 pyte screen 的真实光标位置更新应答器
