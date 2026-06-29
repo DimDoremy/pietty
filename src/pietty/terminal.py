@@ -87,6 +87,7 @@ _KEYMAP: dict[str, bytes] = {
 import asyncio  # noqa: F401  (保留供未来 async 用)
 
 from rich.text import Text
+from rich.style import Style
 from textual.reactive import reactive
 from textual.widget import Widget
 
@@ -94,6 +95,7 @@ from pietty.render import screen_to_rich, char_to_style
 
 # 在 _refresh_paused 期间返回的空白 Text 常量（保证同一对象，使合成器免于重复重绘）
 _PAUSED_TEXT = Text()
+_PAUSED_STYLE = Style()
 
 try:
     import ptyprocess
@@ -132,6 +134,12 @@ class TerminalWidget(Widget):
         self._refresh_paused = False
         self.size_fraction: float = 0.5
         self._scrollback_mode = False  # v 键切换的回看模式
+        # viewer 模式状态
+        self._viewer_active: bool = False
+        self._viewer_row: int = 0
+        self._viewer_col: int = 0
+        self._viewer_sel_start: tuple[int, int] | None = None
+        self._viewer_sel_end: tuple[int, int] | None = None
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
@@ -278,30 +286,67 @@ class TerminalWidget(Widget):
             self._pty.setwinsize(r, c)
 
     def render(self) -> Text:
-        if self._scrollback_mode:
-            return self._render_scrollback()
+        if self._viewer_active:
+            return self._render_viewer()
         if self._term_cache is None and not self._refresh_paused:
             self._term_cache = screen_to_rich(self.model.screen)
         return self._term_cache or _PAUSED_TEXT
 
-    def _render_scrollback(self) -> Text:
-        """渲染历史回看视图（pyte HistoryScreen 的 history buffer）。"""
+    @property
+    def _viewer_total_lines(self) -> int:
+        """历史 + 当前屏幕的总行数。"""
+        return len(self.model.screen.history.top) + self.model.screen.lines
+
+    def _viewer_clamp(self) -> None:
+        """限制光标不越界。"""
+        total = self._viewer_total_lines
+        cols = self.model.screen.columns
+        self._viewer_row = max(0, min(self._viewer_row, total - 1))
+        self._viewer_col = max(0, min(self._viewer_col, cols - 1))
+
+    def _get_viewer_line(self, abs_row: int) -> dict | None:
+        """获取 viewer 中绝对行号 abs_row 对应行的 Char dict。"""
+        screen = self.model.screen
+        n_history = len(screen.history.top)
+        if abs_row < n_history:
+            return screen.history.top[abs_row]
+        screen_row = abs_row - n_history
+        if 0 <= screen_row < screen.lines:
+            return screen.buffer[screen_row]
+        return None
+
+    def _render_viewer(self) -> Text:
+        """渲染 viewer 模式：历史 + 当前屏幕 + 光标 + 选区。"""
+        self._viewer_clamp()
         screen = self.model.screen
         text = Text()
-        # history.top 是 collections.deque，每项是 StaticDefaultDict {x: Char}
-        for row in screen.history.top:
+        total = self._viewer_total_lines
+        # 构建所有行
+        for abs_row in range(total):
+            line_dict = self._get_viewer_line(abs_row)
             for x in range(screen.columns):
-                ch = row[x]
-                text.append(ch.data or " ", style=char_to_style(ch))
+                ch = line_dict[x] if line_dict is not None else None
+                data = ch.data or " " if ch else " "
+                style = char_to_style(ch) if ch else _PAUSED_STYLE
+
+                # 选区高亮
+                if self._viewer_sel_start is not None and self._viewer_sel_end is not None:
+                    sr, sc = self._viewer_sel_start
+                    er, ec = self._viewer_sel_end
+                    sr, er = min(sr, er), max(sr, er)
+                    if sr == er:
+                        in_sel = (abs_row == sr and sc <= x <= ec)
+                    else:
+                        in_sel = (abs_row == sr and x >= sc) or (abs_row == er and x <= ec) or (sr < abs_row < er)
+                    if in_sel:
+                        style = style + Style(bgcolor="white", color="black")
+
+                # 光标高亮
+                if abs_row == self._viewer_row and x == self._viewer_col:
+                    style = Style(bgcolor="white", color="black", bold=True)
+
+                text.append(data, style=style)
             text.append("\n")
-        # 再接当前屏幕
-        for y in range(screen.lines):
-            line = screen.buffer[y]
-            for x in range(screen.columns):
-                ch = line[x]
-                text.append(ch.data or " ", style=char_to_style(ch))
-            if y != screen.lines - 1:
-                text.append("\n")
         return text
 
     def send_key(self, key: str, character: str | None) -> None:

@@ -77,6 +77,10 @@ class PiettyApp(App):
         background: $success 50%;
         color: $text;
     }
+    StatusBar.mode-viewer {
+        background: $accent 40%;
+        color: $text;
+    }
     #overlay {
         layout: grid;
         grid-size: 2 2;
@@ -99,6 +103,7 @@ class PiettyApp(App):
         self._pane_seq: int = 0
         self._overview: bool = False
         self._overview_input: str = ""
+        self._viewer: bool = False  # viewer 模式
         self._last_escape_time: float = 0  # Alt+key 检测（ESC+key 合成）
         self._prefix_pending: bool = False  # ; 前缀等待第二个键
         try:
@@ -461,18 +466,130 @@ class PiettyApp(App):
         self._apply_pane_size(w)
         self._refresh_status()
 
-    def _toggle_scrollback(self) -> None:
-        """v/alt-v：切换当前 shell 的历史回看模式。"""
+    def _toggle_viewer(self) -> None:
+        """v：切换当前 shell 的 viewer 模式（历史回看 + 光标 + 选择 + 复制）。"""
         w = self.focused_widget
         if w is None:
             return
-        w._scrollback_mode = not w._scrollback_mode
+        self._viewer = not w._viewer_active
+        w._viewer_active = self._viewer
+        if self._viewer:
+            # 初始定位到最后一行
+            w._viewer_row = w._viewer_total_lines - 1
+            w._viewer_col = 0
+            w._viewer_sel_start = None
+            w._viewer_sel_end = None
+            w._dirty = True
         w._term_cache = None
         try:
             w.refresh(layout=False)
+            self.pane_container.scroll_to_widget(w, animate=False)
         except Exception:
             pass
         self._refresh_status()
+
+    def _handle_viewer_command(self, key: str) -> None:
+        """viewer 模式按键处理。"""
+        w = self.focused_widget
+        if w is None or not w._viewer_active:
+            self._toggle_viewer()
+            return
+        cols = w.model.screen.columns
+        half_page = max(1, (w.size.height or 24) // 2)
+        handled = True
+
+        if key == "j":
+            w._viewer_row += 1
+        elif key == "k":
+            w._viewer_row -= 1
+        elif key == "h":
+            w._viewer_col -= 1
+        elif key == "l":
+            w._viewer_col += 1
+        elif key == "alt+j":
+            w._viewer_row += half_page
+        elif key == "alt+k":
+            w._viewer_row -= half_page
+        elif key == "alt+h":
+            w._viewer_col = 0  # 行首
+        elif key == "alt+l":
+            w._viewer_col = cols - 1  # 行尾
+        elif key == "p":
+            # 开始/结束选择
+            if w._viewer_sel_start is None:
+                w._viewer_sel_start = (w._viewer_row, w._viewer_col)
+            else:
+                w._viewer_sel_end = (w._viewer_row, w._viewer_col)
+                if w._viewer_sel_start == w._viewer_sel_end:
+                    w._viewer_sel_start = None
+                    w._viewer_sel_end = None
+        elif key == "y":
+            self._viewer_yank(w)
+        elif key == "n":
+            self._toggle_viewer()
+            return
+        elif key == "i":
+            self.modes.current = "insert"
+            self._toggle_viewer()
+            self._refresh_status()
+            return
+        elif key == "g":
+            self._toggle_overview()
+            return
+        elif key == "escape":
+            self._toggle_viewer()
+            return
+        else:
+            handled = False
+
+        if handled:
+            w._viewer_clamp()
+            w._dirty = True
+            try:
+                w.refresh(layout=False)
+            except Exception:
+                pass
+
+    def _viewer_yank(self, w) -> None:
+        """复制 viewer 选区内容到剪贴板。"""
+        if w._viewer_sel_start is None:
+            return
+        sr, sc = w._viewer_sel_start
+        er, ec = w._viewer_sel_end if w._viewer_sel_end is not None else (sr, sc)
+        if sr > er or (sr == er and sc > ec):
+            sr, sc, er, ec = er, ec, sr, sc
+        lines = []
+        for r in range(sr, er + 1):
+            d = w._get_viewer_line(r)
+            if d is None:
+                continue
+            line_text = ""
+            for x in range(w.model.screen.columns):
+                ch = d[x]
+                if ch:
+                    line_text += ch.data or " "
+                else:
+                    line_text += " "
+            if r == sr:
+                line_text = line_text[sc:]
+            if r == er:
+                line_text = line_text[:ec + 1]
+            lines.append(line_text)
+        text = "\n".join(lines)
+        try:
+            import pyperclip
+            pyperclip.copy(text)
+        except ImportError:
+            try:
+                import subprocess
+                p = subprocess.Popen(["wl-copy" if os.name != "nt" else "clip"],
+                                    stdin=subprocess.PIPE)
+                if p.stdin:
+                    p.stdin.write(text.encode("utf-8"))
+                    p.stdin.close()
+            except Exception:
+                print("[pietty] 复制失败: 未安装 pyperclip / wl-copy / clip",
+                      file=sys.stderr)
 
     def _focus_and_scroll(self) -> None:
         for w in self._panes:
@@ -495,6 +612,12 @@ class PiettyApp(App):
             bar.update("-- INSERT --   "
                        + "  ".join(t for _, t in _INSERT_HINTS))
             bar.set_class(True, "mode-insert")
+        elif self._viewer:
+            bar.update("-- VIEWER --   "
+                       "j↓ k↑ h← l→  ;j/;k半页  ;h行首 ;l行尾  "
+                       "p选择  y复制  n回normal  i插模式  g概览")
+            bar.set_class(False, "mode-insert")
+            bar.set_class(True, "mode-viewer")
         elif pending_close:
             bar.set_class(False, "mode-insert")
             bar.update("-- CLOSE? --   (k) 终止  (b) 保留后台  (escape) 取消")
@@ -511,6 +634,7 @@ class PiettyApp(App):
             bar.update(f"-- NORMAL -- {pos}   "
                        + "  ".join(t for _, t in _NORMAL_HINTS))
             bar.set_class(False, "mode-insert")
+            bar.set_class(False, "mode-viewer")
         bar.refresh()
         self.call_after_refresh(self._force_bar_refresh)
 
@@ -540,11 +664,21 @@ class PiettyApp(App):
         else:
             self._last_escape_time = 0
 
-        # ; 前缀在任何模式下都可用（允许 insert 模式下 ;q 退出）
+        # viewer 模式：所有按键交给 _handle_viewer_command
+        if self._viewer and self._prefix_pending:
+            self._prefix_pending = False
+            self._handle_viewer_command("alt+" + key)
+            event.prevent_default()
+            event.stop()
+            return
+
+        # ; 前缀在任何模式下都可用
         if self._prefix_pending:
             self._prefix_pending = False
             alt_key = "alt+" + key
-            if self.modes.transition(alt_key):
+            if self._viewer:
+                self._handle_viewer_command(alt_key)
+            elif self.modes.transition(alt_key):
                 self._refresh_status()
             elif self.modes.current == "normal":
                 self._handle_normal_command(alt_key)
@@ -553,6 +687,13 @@ class PiettyApp(App):
             return
         if key in (";", "semicolon"):
             self._prefix_pending = True
+            event.prevent_default()
+            event.stop()
+            return
+
+        # viewer 模式按键路由
+        if self._viewer:
+            self._handle_viewer_command(key)
             event.prevent_default()
             event.stop()
             return
@@ -630,7 +771,7 @@ class PiettyApp(App):
         elif key == "g":
             self._toggle_overview()
         elif key in ("v", "alt+v"):
-            self._toggle_scrollback()
+            self._toggle_viewer()
         elif key == "q":
             self._quit_now()
 
