@@ -1,7 +1,7 @@
 """把 PaneTree 映射到网格坐标，用于 CSS Grid 平铺布局。"""
 from __future__ import annotations
 
-from pietty.layout import PaneTree, Horizontal, Vertical, Pane
+from pietty.layout import PaneTree, Horizontal, Pane
 
 
 def _assign(node, r0: int, c0: int, rows: int, cols: int, out: dict) -> None:

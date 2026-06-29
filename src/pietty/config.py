@@ -53,7 +53,7 @@ def load() -> Config:
     # 合并 theme 字段（忽略非法值）
     theme_raw = raw.get("theme", {})
     if not isinstance(theme_raw, dict):
-        print(f"[pietty] 警告: [theme] 非 dict，忽略", file=sys.stderr)
+        print("[pietty] 警告: [theme] 非 dict，忽略", file=sys.stderr)
     else:
         for key in cfg.theme.__dataclass_fields__:
             val = theme_raw.get(key)

@@ -246,7 +246,7 @@ class TerminalWidget(Widget):
         """真正关闭 PTY（仅退出/关闭面板时调用）。
         用 os.close/os.kill 绕过 ptyprocess.close() 的 time.sleep 阻塞。
         """
-        import time as _t, os as _os
+        import time as _t
         try:
             with open("/tmp/pietty_debug.log", "a") as _f:
                 _f.write(f"[{_t.perf_counter():.4f}] shutdown enter fd={self._fd} pty={self._pty is not None}\n")
