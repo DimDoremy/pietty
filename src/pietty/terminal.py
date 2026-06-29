@@ -90,7 +90,7 @@ from rich.text import Text
 from textual.reactive import reactive
 from textual.widget import Widget
 
-from pietty.render import screen_to_rich
+from pietty.render import screen_to_rich, char_to_style
 
 # 在 _refresh_paused 期间返回的空白 Text 常量（保证同一对象，使合成器免于重复重绘）
 _PAUSED_TEXT = Text()
@@ -113,24 +113,25 @@ class TerminalWidget(Widget):
 
     def __init__(self, shell: str = "$SHELL", cwd: str | None = None,
                  term: str = "xterm-256color", locale: str = "en_US.UTF-8",
-                 id: str | None = None) -> None:
+                 id: str | None = None, history_lines: int = 10000) -> None:
         super().__init__(id=id)
         self._shell = shell
         self._cwd = cwd or os.getcwd()
         self._term = term
         self._locale = locale
-        self.model = TerminalModel()
+        self.model = TerminalModel(history=history_lines)
         self._pty = None
         self._fd: int | None = None
         self._closed = False
-        self._spawned = False  # 防止布局重建 re-mount 时重复 spawn PTY
+        self._spawned = False
         from pietty.ptyquery import ReplyBuffer
         self._reply = ReplyBuffer(bg="#0c0c0c")
-        self._dirty = False  # 渲染节流: 标记需要重绘, 每帧只刷新一次
-        self._term_cache = None  # screen_to_rich 缓存(避免未变时重算)
-        self._refresh_scheduled = False  # 避免重复调度刷新
-        self._refresh_paused = False  # App 进入关闭确认态时暂停刷新（确保提示可见）
-        self.size_fraction: float = 0.5  # 占视口宽度比例（niri 风格：默认一半）
+        self._dirty = False
+        self._term_cache = None
+        self._refresh_scheduled = False
+        self._refresh_paused = False
+        self.size_fraction: float = 0.5
+        self._scrollback_mode = False  # v 键切换的回看模式
 
     # ---- lifecycle ----
     def on_mount(self) -> None:
@@ -170,12 +171,21 @@ class TerminalWidget(Widget):
         except BlockingIOError:
             return
         except OSError:
-            # PTY 子进程退出后 read 报 EIO
             self._detach_reader()
             return
         if not data:
             self._detach_reader()
             return
+        # 检测 alt-screen 切换（进入/退出全屏模式如 atuin/vim/less）
+        # \x1b[?1049h = 进入 alt-screen, \x1b[?1049l = 退出
+        if b"\x1b[?1049" in data:
+            self._term_cache = None
+            self._dirty = True
+            # 立即强制刷新（不等节流），确保全屏切换时 DOM 同步
+            try:
+                self.refresh(layout=False)
+            except Exception:
+                pass
         self.model.feed_bytes(data)
         # 用 pyte screen 的真实光标位置更新应答器
         try:
@@ -268,9 +278,30 @@ class TerminalWidget(Widget):
             self._pty.setwinsize(r, c)
 
     def render(self) -> Text:
+        if self._scrollback_mode:
+            return self._render_scrollback()
         if self._term_cache is None and not self._refresh_paused:
             self._term_cache = screen_to_rich(self.model.screen)
         return self._term_cache or _PAUSED_TEXT
+
+    def _render_scrollback(self) -> Text:
+        """渲染历史回看视图（pyte HistoryScreen 的 history buffer）。"""
+        screen = self.model.screen
+        text = Text()
+        for row_idx in range(screen.history.top.line_count):
+            line = screen.history.top.buffer[row_idx]
+            for x in range(screen.columns):
+                ch = line[x]
+                text.append(ch.data or " ", style=char_to_style(ch))
+            text.append("\n")
+        for y in range(screen.lines):
+            line = screen.buffer[y]
+            for x in range(screen.columns):
+                ch = line[x]
+                text.append(ch.data or " ", style=char_to_style(ch))
+            if y != screen.lines - 1:
+                text.append("\n")
+        return text
 
     def send_key(self, key: str, character: str | None) -> None:
         """由 App.on_key 路由调用: 把按键转为字节写入 PTY（insert 模式）。

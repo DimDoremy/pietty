@@ -31,12 +31,13 @@ _NORMAL_HINTS = [
     ("h/l", "h l 切换shell"),
     ("j/k", "j k 切换tab"),
     ("n", "n 新建shell"),
+    ("v", "v 回看历史"),
     (";", "; 前缀=alt操作"),
     ("c", "c 关闭"),
     ("g", "g 概览"),
     ("q", "q 退出"),
 ]
-_INSERT_HINTS = [("escape/Alt+q", "Esc Alt+q 回 normal")]
+_INSERT_HINTS = [("esc/;n", "Esc ;n 回 normal")]
 
 
 class PaneContainer(HorizontalScroll):
@@ -142,7 +143,10 @@ class PiettyApp(App):
         new_row=True:  新建 tab（新行）。
         """
         self._pane_seq += 1
-        w = TerminalWidget(id=f"pane-{self._pane_seq}")
+        w = TerminalWidget(
+            id=f"pane-{self._pane_seq}",
+            history_lines=self._cfg.history_lines,
+        )
         self._panes.append(w)
         idx = len(self._panes) - 1
         created_row = False
@@ -445,7 +449,7 @@ class PiettyApp(App):
             self._apply_pane_size(w)
 
     def _cycle_pane_size(self) -> None:
-        """r 键：循环切换聚焦 pane 的宽度档位（全屏→2/3→1/2→1/3→全屏）。"""
+        """r 键：循环切换聚焦 pane 的宽度档位。"""
         w = self.focused_widget
         if w is None:
             return
@@ -455,6 +459,19 @@ class PiettyApp(App):
             i = -1
         w.size_fraction = SIZE_TIERS[(i + 1) % len(SIZE_TIERS)]
         self._apply_pane_size(w)
+        self._refresh_status()
+
+    def _toggle_scrollback(self) -> None:
+        """v/alt-v：切换当前 shell 的历史回看模式。"""
+        w = self.focused_widget
+        if w is None:
+            return
+        w._scrollback_mode = not w._scrollback_mode
+        w._term_cache = None
+        try:
+            w.refresh(layout=False)
+        except Exception:
+            pass
         self._refresh_status()
 
     def _focus_and_scroll(self) -> None:
@@ -587,31 +604,33 @@ class PiettyApp(App):
             self._new_pane(new_row=True)
             self._refresh_status()
         elif key == "k":
-            self._move_focus(-1, 0)   # 上一个 tab
+            self._move_focus(-1, 0)
             self._refresh_status()
         elif key == "j":
-            self._move_focus(1, 0)    # 下一个 tab
+            self._move_focus(1, 0)
             self._refresh_status()
         elif key == "h":
-            self._move_focus(0, -1)   # 左一个 shell
+            self._move_focus(0, -1)
             self._refresh_status()
         elif key == "l":
-            self._move_focus(0, 1)    # 右一个 shell
+            self._move_focus(0, 1)
             self._refresh_status()
         elif key == "alt+k":
-            self._move_pane(-1, 0)    # 移到上一个 tab
+            self._move_pane(-1, 0)
         elif key == "alt+j":
-            self._move_pane(1, 0)     # 移到下一个 tab
+            self._move_pane(1, 0)
         elif key == "alt+h":
-            self._move_pane(0, -1)    # 同 tab 左移
+            self._move_pane(0, -1)
         elif key == "alt+l":
-            self._move_pane(0, 1)     # 同 tab 右移
+            self._move_pane(0, 1)
         elif key == "c":
             self._close_pane()
         elif key == "r":
             self._cycle_pane_size()
         elif key == "g":
             self._toggle_overview()
+        elif key in ("v", "alt+v"):
+            self._toggle_scrollback()
         elif key == "q":
             self._quit_now()
 

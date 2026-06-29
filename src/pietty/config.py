@@ -24,6 +24,7 @@ class Theme:
 @dataclass
 class Config:
     theme: Theme = field(default_factory=Theme)
+    history_lines: int = 10000
 
 
 def _config_path() -> Path:
@@ -63,6 +64,12 @@ def load() -> Config:
                 else:
                     print(f"[pietty] 警告: theme.{key}={val!r} 不是合法颜色，跳过",
                           file=sys.stderr)
+
+    # history_lines
+    hl = raw.get("history_lines")
+    if isinstance(hl, int) and hl > 0:
+        cfg.history_lines = hl
+
     return cfg
 
 
