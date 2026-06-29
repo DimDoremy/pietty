@@ -233,25 +233,12 @@ class TerminalWidget(Widget):
                 pass
 
     def on_unmount(self) -> None:
-        # 布局重建会先 unmount 再 mount：只 detach reader，不销毁 PTY
-        import time as _t
-        try:
-            with open("/tmp/pietty_debug.log", "a") as _f:
-                _f.write(f"[{_t.perf_counter():.4f}] on_unmount id={self.id}\n")
-        except Exception:
-            pass
         self._detach_reader()
 
     def shutdown(self) -> None:
         """真正关闭 PTY（仅退出/关闭面板时调用）。
         用 os.close/os.kill 绕过 ptyprocess.close() 的 time.sleep 阻塞。
         """
-        import time as _t
-        try:
-            with open("/tmp/pietty_debug.log", "a") as _f:
-                _f.write(f"[{_t.perf_counter():.4f}] shutdown enter fd={self._fd} pty={self._pty is not None}\n")
-        except Exception:
-            pass
         self._detach_reader()
         self._closed = True
         if self._pty is not None:
@@ -271,11 +258,6 @@ class TerminalWidget(Widget):
                 pass
         self._pty = None
         self._fd = None
-        try:
-            with open("/tmp/pietty_debug.log", "a") as _f:
-                _f.write(f"[{_t.perf_counter():.4f}] shutdown done\n")
-        except Exception:
-            pass
 
     def on_resize(self, event) -> None:
         r, c = self.size.height, self.size.width

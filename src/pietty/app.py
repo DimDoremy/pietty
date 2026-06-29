@@ -20,21 +20,6 @@ from pietty.sidebar import Sidebar
 from pietty.overview import OverviewScreen
 
 
-_DEBUG_LOG = None
-
-
-def _dbg(fmt: str, *args) -> None:
-    global _DEBUG_LOG
-    if _DEBUG_LOG is None:
-        try:
-            _DEBUG_LOG = open("/tmp/pietty_debug.log", "a", buffering=1)
-        except Exception:
-            return
-    try:
-        _DEBUG_LOG.write(f"[{time.perf_counter():.4f}] " + (fmt % args) + "\n")
-    except Exception:
-        pass
-
 
 # 面板宽度档位（占视口宽度的比例），r 键循环。
 # 默认首面板和新建面板均为 1/2（niri 风格：劈一半）。
@@ -195,7 +180,6 @@ class PiettyApp(App):
         self.call_after_refresh(self._force_layout)
 
     def _close_pane(self) -> None:
-        _dbg("_close_pane enter, rows=%d", len(self._grid))
         if not self._panes:
             return
         w = self.focused_widget
@@ -203,13 +187,11 @@ class PiettyApp(App):
             return
         has_running = (w._pty is not None and w._pty.pid is not None
                        and self._has_children(w._pty.pid))
-        _dbg("_close_pane: has_running=%s", has_running)
         if has_running:
             self._close_pending = (self._focused_row, self._focused_col)
             self._refresh_status(pending_close=True)
             return
         if len(self._panes) <= 1:
-            _dbg("_close_pane: only 1 pane, keep it")
             return
         self._do_close_grid(self._focused_row, self._focused_col)
 
@@ -275,33 +257,26 @@ class PiettyApp(App):
 
     async def _close_task(self, w: TerminalWidget) -> None:
         """关闭 task：shutdown -> remove -> layout。"""
-        _dbg("_close_task: shutdown start")
         w.shutdown()
-        _dbg("_close_task: shutdown done")
         await asyncio.sleep(0)
-        _dbg("_close_task: remove start")
         try:
             # 用 display=False 隐藏而非 remove()：在含活跃 PTY reader 的
             # HorizontalScroll 中调用 remove() 会触发 Textual 合成器死锁
             # （关闭后整个 app 不再渲染/响应）。隐藏 widget 保留在 DOM 中
             # 但其 PTY 已 shutdown（reader 已 detach、进程已 kill），开销极小。
             w.display = False
-        except Exception as e:
-            _dbg("_close_task: remove err %r", e)
-        _dbg("_close_task: remove done")
+        except Exception:
+            pass
         # 多帧 sleep 确保 DOM 摘除与 prune 完成
         await asyncio.sleep(0.05)
-        _dbg("_close_task: post-remove sleep done")
         self._close_pending = None
         for pw in self._panes:
             pw._refresh_paused = False
         # 不调 _focus_and_scroll（其中的 scroll_to_widget 在活跃 PTY reader 下
         # 会触发合成器死锁）。改为直接同步可见性和状态栏。
-        _dbg("_close_task: sync start")
         self._sync_pane_visibility()
         self.sidebar.set_highlight(self._focused_row)
         self._refresh_status()
-        _dbg("_close_task: ALL DONE")
 
     def _cancel_pending(self) -> None:
         self._close_pending = None
@@ -312,7 +287,6 @@ class PiettyApp(App):
     def _timeout_pending(self) -> None:
         """pending 超时自动取消（防止按键无法送达时永久卡死）。"""
         if self._close_pending is not None:
-            _dbg("_timeout_pending: auto-cancel after 5s")
             self._cancel_pending()
 
     def _move_focus(self, d_row: int, d_col: int) -> None:
@@ -383,8 +357,8 @@ class PiettyApp(App):
                     self.pane_container.move_child(focused_w, after=neighbor_w)
                 else:
                     self.pane_container.move_child(focused_w, before=neighbor_w)
-            except Exception as e:
-                _dbg("move_child err %r", e)
+            except Exception:
+                pass
 
         self._sync_pane_visibility()
         self._focus_and_scroll()
@@ -427,8 +401,6 @@ class PiettyApp(App):
 
     def _post_overview(self) -> None:
         """概览退出后同步显示。"""
-        _dbg("_post_overview: mode=%s focused=(%d,%d)",
-              self.modes.current, self._focused_row, self._focused_col)
         self._sync_pane_visibility()
         self._force_layout()
         self._focus_and_scroll()
@@ -441,8 +413,8 @@ class PiettyApp(App):
         try:
             self.screen._layout_required = True
             self.screen._refresh_layout()
-        except Exception as e:
-            _dbg("_force_layout err %r", e)
+        except Exception:
+            pass
 
     # ---- 面板尺寸 ----
     def _viewport_cols(self) -> int:
@@ -464,8 +436,8 @@ class PiettyApp(App):
         cols = max(cols, 20)  # 安全下限
         try:
             w.styles.width = cols
-        except Exception as e:
-            _dbg("_apply_pane_size err %r", e)
+        except Exception:
+            pass
 
     def _apply_all_sizes(self) -> None:
         """按当前视口宽度重算所有 pane 的宽度（用于终端 resize）。"""
@@ -509,7 +481,6 @@ class PiettyApp(App):
         elif pending_close:
             bar.set_class(False, "mode-insert")
             bar.update("-- CLOSE? --   (k) 终止  (b) 保留后台  (escape) 取消")
-            _dbg("_refresh_status: set _refresh_paused on %d panes", len(self._panes))
             for w in self._panes:
                 w._refresh_paused = True
             try:
@@ -556,7 +527,6 @@ class PiettyApp(App):
         if self._prefix_pending:
             self._prefix_pending = False
             alt_key = "alt+" + key
-            _dbg("prefix→ %r", alt_key)
             if self.modes.transition(alt_key):
                 self._refresh_status()
             elif self.modes.current == "normal":
@@ -572,20 +542,16 @@ class PiettyApp(App):
 
         # 关闭确认待处理: 拦截 k/b/escape
         if self._close_pending is not None:
-            _dbg("pending key: %r", event.key)
             if key == "k":
                 row, col = self._close_pending
                 self._close_pending = None
-                _dbg("pending: k confirm")
                 if len(self._panes) <= 1:
                     return  # 保留最后一个 shell
                 else:
                     self._do_close_grid(row, col)
             elif key == "b":
-                _dbg("pending: b background")
                 self._cancel_pending()
             elif key == "escape":
-                _dbg("pending: escape cancel")
                 self._cancel_pending()
             # 其他键忽略
             event.prevent_default()
