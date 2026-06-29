@@ -134,6 +134,8 @@ class TerminalWidget(Widget):
         self._refresh_paused = False
         self.size_fraction: float = 0.5
         self._scrollback_mode = False  # v 键切换的回看模式
+        self._alt_screen: bool = False
+        self._alt_screen_saved = None  # alt-screen 进入时保存的屏幕状态
         # viewer 模式状态
         self._viewer_active: bool = False
         self._viewer_row: int = 0
@@ -184,17 +186,37 @@ class TerminalWidget(Widget):
         if not data:
             self._detach_reader()
             return
-        # 检测 alt-screen 切换（进入/退出全屏模式如 atuin/vim/less）
-        # \x1b[?1049h = 进入 alt-screen, \x1b[?1049l = 退出
+
+        # 手动 alt-screen 支持（pyte 不处理 \x1b[?1049h/l）
+        if b"\x1b[?1049h" in data and not self._alt_screen:
+            self._alt_screen = True
+            # 保存当前屏幕（浅拷贝每个可见行的 Char 数据）
+            self._alt_screen_saved = [
+                [c.copy() for c in line.values()]
+                for line in self.model.screen.buffer
+            ]
+        elif b"\x1b[?1049l" in data and self._alt_screen:
+            self._alt_screen = False
+
+        self.model.feed_bytes(data)
+
+        # alt-screen 退出时恢复保存的内容
+        if self._alt_screen_saved is not None and not self._alt_screen:
+            screen = self.model.screen
+            for y, row_data in enumerate(self._alt_screen_saved):
+                if y < screen.lines:
+                    for x, c in enumerate(row_data):
+                        if x < screen.columns:
+                            screen.buffer[y][x] = c
+            self._alt_screen_saved = None
+
+        # pyte 不识别 1049 模式 → 强制清除序列中的模式设置，
+        # 确保 feed_bytes 后屏幕内容正确。
         if b"\x1b[?1049" in data:
             self._term_cache = None
             self._dirty = True
-            # 立即强制刷新（不等节流），确保全屏切换时 DOM 同步
-            try:
-                self.refresh(layout=False)
-            except Exception:
-                pass
-        self.model.feed_bytes(data)
+
+        # 用 pyte screen 的真实光标位置更新应答器
         # 用 pyte screen 的真实光标位置更新应答器
         try:
             self._reply.update_cursor(
@@ -316,13 +338,17 @@ class TerminalWidget(Widget):
         return None
 
     def _render_viewer(self) -> Text:
-        """渲染 viewer 模式：历史 + 当前屏幕 + 光标 + 选区。"""
+        """渲染 viewer 模式：viewport 内的历史/屏幕内容 + 光标 + 选区。"""
         self._viewer_clamp()
         screen = self.model.screen
-        text = Text()
         total = self._viewer_total_lines
-        # 构建所有行
-        for abs_row in range(total):
+        visible = min(self.size.height or 24, total)  # 视口高度
+        # 计算可见窗口：光标居中
+        view_start = max(0, min(self._viewer_row - visible // 2,
+                                total - visible))
+        view_end = min(view_start + visible, total)
+        text = Text()
+        for abs_row in range(view_start, view_end):
             line_dict = self._get_viewer_line(abs_row)
             for x in range(screen.columns):
                 ch = line_dict[x] if line_dict is not None else None
@@ -337,7 +363,9 @@ class TerminalWidget(Widget):
                     if sr == er:
                         in_sel = (abs_row == sr and sc <= x <= ec)
                     else:
-                        in_sel = (abs_row == sr and x >= sc) or (abs_row == er and x <= ec) or (sr < abs_row < er)
+                        in_sel = ((abs_row == sr and x >= sc)
+                                  or (abs_row == er and x <= ec)
+                                  or (sr < abs_row < er))
                     if in_sel:
                         style = style + Style(bgcolor="white", color="black")
 
