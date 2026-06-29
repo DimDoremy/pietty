@@ -295,10 +295,13 @@ class PiettyApp(App):
         self._close_pending = None
         for pw in self._panes:
             pw._refresh_paused = False
-        _dbg("_close_task: focus start")
-        self._focus_and_scroll()
+        # 不调 _focus_and_scroll（其中的 scroll_to_widget 在活跃 PTY reader 下
+        # 会触发合成器死锁）。改为直接同步可见性和状态栏。
+        _dbg("_close_task: sync start")
+        self._sync_pane_visibility()
+        self.sidebar.set_highlight(self._focused_row)
         self._refresh_status()
-        _dbg("_close_task: ALL DONE (no force_layout)")
+        _dbg("_close_task: ALL DONE")
 
     def _cancel_pending(self) -> None:
         self._close_pending = None
@@ -488,12 +491,8 @@ class PiettyApp(App):
         w = self.focused_widget
         if w is not None:
             w.add_class("focused-pane")
-            # 滚动让聚焦 shell 进视图
-            try:
-                self.pane_container.scroll_to_widget(w, animate=False)
-            except Exception:
-                pass
-        # 高亮侧边栏对应 tab（行索引）
+        # 不调 scroll_to_widget：在含活跃 PTY reader 的容器中会触发合成器死锁。
+        # 用户可用 r 键调整 pane 宽度让目标 shell 进视图。
         self.sidebar.set_highlight(self._focused_row)
         self._sync_pane_visibility()
 
