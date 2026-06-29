@@ -288,12 +288,13 @@ class TerminalWidget(Widget):
         """渲染历史回看视图（pyte HistoryScreen 的 history buffer）。"""
         screen = self.model.screen
         text = Text()
-        for row_idx in range(screen.history.top.line_count):
-            line = screen.history.top.buffer[row_idx]
+        # history.top 是 collections.deque，每项是 StaticDefaultDict {x: Char}
+        for row in screen.history.top:
             for x in range(screen.columns):
-                ch = line[x]
+                ch = row[x]
                 text.append(ch.data or " ", style=char_to_style(ch))
             text.append("\n")
+        # 再接当前屏幕
         for y in range(screen.lines):
             line = screen.buffer[y]
             for x in range(screen.columns):
