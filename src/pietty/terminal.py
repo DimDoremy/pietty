@@ -206,11 +206,13 @@ class TerminalWidget(Widget):
         elif enter and not self._alt_screen and not exit_alt:
             # 进入 alt-screen：保存当前屏幕并清空
             self._alt_screen = True
-            self._alt_screen_saved = [
-                [type(c)(**c._asdict()) for c in line.values()]
-                for line in self.model.screen.buffer
-            ]
             screen = self.model.screen
+            self._alt_screen_saved = [
+                [type(screen.buffer[y][x])(**screen.buffer[y][x]._asdict())
+                 for x in range(screen.columns)]
+                for y in range(screen.lines)
+            ]
+            # 清空屏幕
             for y in range(screen.lines):
                 for x in range(screen.columns):
                     screen.buffer[y][x] = screen.default_char()
